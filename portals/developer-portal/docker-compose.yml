@@ -63,7 +63,7 @@ services:
 
   devportal:
     build: .
-    image: ghcr.io/lasanthas/api-platform/developer-portal:0.5.0
+    image: ghcr.io/lasanthas/api-platform/developer-portal:0.6.0-SNAPSHOT
     ports:
       - "3000:3000"
     depends_on:
