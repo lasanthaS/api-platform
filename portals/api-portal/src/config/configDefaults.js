@@ -147,6 +147,12 @@ const DEFAULTS = {
         // the setting never silently resets it. Matched verbatim against the claim, so
         // it is NOT lowercased, unlike the handle.
         idpOrgId: '',
+        // Whether an organization claim is mandatory at login. false (default) — a
+        // session/bearer credential with no organization claim is granted access to
+        // this instance's configured organization rather than rejected. true — a
+        // missing claim is a 403. Does not affect a credential that DOES carry a
+        // claim; that is always honored, see resolveScopedOrg in authMiddleware.js.
+        enforceOrgAtLogin: false,
         // JWT claim name mappings — which token claim carries each field.
         // Dot-notation supported for nested claims (e.g. "realm_access.roles").
         claimMappings: {

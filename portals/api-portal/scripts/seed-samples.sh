@@ -29,8 +29,9 @@
 #   ./scripts/seed-samples.sh
 #
 # ADMIN_USERNAME / ADMIN_PASSWORD environment variables skip the interactive
-# credential prompt (used by CI). API_PORTAL_URL / PLATFORM_API_URL override
-# the default local URLs.
+# credential prompt (used by CI). ACCESS_TOKEN supplies an already-issued bearer
+# token instead (e.g. from an external IDP) and skips the Platform API login
+# entirely. API_PORTAL_URL / PLATFORM_API_URL override the default local URLs.
 #
 # Safe to re-run: entries that already exist (matched by name + version) are
 # skipped, not duplicated.
@@ -86,27 +87,35 @@ command -v curl >/dev/null 2>&1 || fail "curl is required but not found on PATH.
 command -v jq   >/dev/null 2>&1 || fail "jq is required but not found on PATH."
 command -v zip  >/dev/null 2>&1 || fail "zip is required but not found on PATH."
 
-if [ -z "${ADMIN_USERNAME:-}" ] && [ -t 0 ]; then
-    read -r -p "API Portal admin username: " ADMIN_USERNAME
-fi
-[ -n "${ADMIN_USERNAME:-}" ] || fail "an admin username is required (set ADMIN_USERNAME or run interactively)."
+# ACCESS_TOKEN lets a caller supply an already-issued bearer token (e.g. one
+# obtained from an external IDP, as onboard-tenant.sh does) instead of logging in
+# to Platform API here — the only auth backend this script otherwise knows about.
+if [ -n "${ACCESS_TOKEN:-}" ]; then
+    log "Using supplied ACCESS_TOKEN — skipping Platform API login."
+    TOKEN="$ACCESS_TOKEN"
+else
+    if [ -z "${ADMIN_USERNAME:-}" ] && [ -t 0 ]; then
+        read -r -p "API Portal admin username: " ADMIN_USERNAME
+    fi
+    [ -n "${ADMIN_USERNAME:-}" ] || fail "an admin username is required (set ADMIN_USERNAME/ADMIN_PASSWORD, or ACCESS_TOKEN, or run interactively)."
 
-if [ -z "${ADMIN_PASSWORD:-}" ] && [ -t 0 ]; then
-    read -r -s -p "API Portal admin password: " ADMIN_PASSWORD
-    echo
-fi
-[ -n "${ADMIN_PASSWORD:-}" ] || fail "an admin password is required (set ADMIN_PASSWORD or run interactively)."
+    if [ -z "${ADMIN_PASSWORD:-}" ] && [ -t 0 ]; then
+        read -r -s -p "API Portal admin password: " ADMIN_PASSWORD
+        echo
+    fi
+    [ -n "${ADMIN_PASSWORD:-}" ] || fail "an admin password is required (set ADMIN_USERNAME/ADMIN_PASSWORD, or ACCESS_TOKEN, or run interactively)."
 
-log "Logging in to Platform API at $PLATFORM_API_URL ..."
-# Percent-encode both values — a raw '&'/'='/'+'/'%' in either would otherwise
-# split or corrupt the application/x-www-form-urlencoded body. jq is already a
-# hard requirement above, so @uri is used rather than adding a new dependency.
-urlencode() { jq -rn --arg v "$1" '$v|@uri'; }
-ENCODED_ADMIN_USERNAME="$(urlencode "$ADMIN_USERNAME")"
-ENCODED_ADMIN_PASSWORD="$(urlencode "$ADMIN_PASSWORD")"
-TOKEN=$(curl -sk -X POST "$PLATFORM_API_URL/api/portal/v0.9/auth/login" \
-    -d "username=$ENCODED_ADMIN_USERNAME&password=$ENCODED_ADMIN_PASSWORD" | jq -r '.token // empty')
-[ -n "$TOKEN" ] || fail "failed to obtain a token — check the credentials and that Platform API is reachable at $PLATFORM_API_URL."
+    log "Logging in to Platform API at $PLATFORM_API_URL ..."
+    # Percent-encode both values — a raw '&'/'='/'+'/'%' in either would otherwise
+    # split or corrupt the application/x-www-form-urlencoded body. jq is already a
+    # hard requirement above, so @uri is used rather than adding a new dependency.
+    urlencode() { jq -rn --arg v "$1" '$v|@uri'; }
+    ENCODED_ADMIN_USERNAME="$(urlencode "$ADMIN_USERNAME")"
+    ENCODED_ADMIN_PASSWORD="$(urlencode "$ADMIN_PASSWORD")"
+    TOKEN=$(curl -sk -X POST "$PLATFORM_API_URL/api/portal/v0.9/auth/login" \
+        -d "username=$ENCODED_ADMIN_USERNAME&password=$ENCODED_ADMIN_PASSWORD" | jq -r '.token // empty')
+    [ -n "$TOKEN" ] || fail "failed to obtain a token — check the credentials and that Platform API is reachable at $PLATFORM_API_URL."
+fi
 AUTH_HEADER="Authorization: Bearer $TOKEN"
 
 SECONDS=0

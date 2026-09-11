@@ -1,0 +1,44 @@
+# Local test config for the WSO2 IS multi-org demo. NOT for production use:
+# secrets are inline, TLS is off, and IS's self-signed cert is trusted only via
+# NODE_TLS_REJECT_UNAUTHORIZED=0 on the command line (see the run command).
+
+[api_portal.server]
+port = "9543"
+base_url = "http://localhost:9543"
+
+[api_portal.server.https]
+enabled = false
+
+[api_portal.database]
+driver = "sqlite"
+path = "./data/api-portal-idp-demo.db"
+
+[api_portal.security]
+encryption_key = "57fb502bfc301f68fb5d6c0e31821169669421bf5c7c0fca3557cdeb6749a5cb"
+session_secret = "2e00b7043ca23c9770f1a5d9edbb958f14553435a171e240dacd47b464b553ce"
+
+[api_portal.auth]
+mode = "idp"
+
+# These describe the ROOT-org "API Portal" application. Only client_id/secret
+# matter for anything this guide exercises (bearer-token calls) — the
+# authorization/token/callback URLs are required by startup validation but are
+# only used for the browser SSO login button, which this guide doesn't test.
+[api_portal.auth.idp]
+client_id = "YcmeRfT57ix_p22KFaDdPEIxxoga"
+client_secret = "22DgeFUA2r6GDKKIn3_fsFPZ1kjTzC7r_ikgdPWlICka"
+authorization_url = "https://localhost:9443/oauth2/authorize"
+token_url = "https://localhost:9443/oauth2/token"
+callback_url = "http://localhost:9543/api-portal/default/callback"
+jwks_url = "https://localhost:9443/oauth2/jwks"
+
+[api_portal.auth.authorization]
+enabled = true
+mode = "role"
+role_to_scope_mapping = "./resources/role-to-scope-mapping.yaml"
+page_role_validation = false
+
+[api_portal.organization]
+handle = "default"
+display_name = "Default"
+portal_id = "portal_id"

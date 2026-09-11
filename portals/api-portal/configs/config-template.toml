@@ -212,6 +212,15 @@ mode = "local"          # local | idp
 # claim value must log in again after a change.
 # idp_org_id = "default"
 
+# Whether an organization claim is mandatory at login. false (default) — a caller
+# with no organization claim is granted access to this instance's configured
+# organization instead of being rejected. Set to true to require the claim and
+# reject a missing one with a 403.
+#
+# Either way, a claim that IS present is always honored — including for an
+# organization this portal has not seen before, which is provisioned on first use.
+# enforce_org_at_login = false
+
 # JWT claim name mappings — which token claim carries each field.
 # Dot-notation supported for nested claims (e.g. "realm_access.roles").
 [api_portal.auth.claim_mappings]

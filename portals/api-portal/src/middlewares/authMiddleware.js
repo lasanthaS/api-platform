@@ -43,6 +43,7 @@ const { verifyPlatformJwtClaims, decodePlatformJwtClaims } = require('../utils/p
 const { accessTokenPresent, refreshAccessToken, verifyWithCertificate, resolveOrgIdp } = require('../utils/tokenUtil');
 const orgDao = require('../dao/organizationDao');
 const orgContext = require('../utils/orgContext');
+const seederService = require('../services/seederService');
 const userIdpReferenceDao = require('../dao/userIdpReferenceDao');
 const { effectiveScopes, isAuthorizationEnabled, isRoleMode } = require('./authorization');
 const { NotFoundError } = require('../utils/errors/customErrors');
@@ -125,9 +126,56 @@ async function resolveUserUuid(req, sub) {
     return userUuid;
 }
 
+// createRemoteJWKSet's own cache is per call, so a fresh one is a fresh HTTP
+// fetch of the key set — reused here across requests to the same URL, keyed by
+// resolved jwks URL (plural now that resolveJwksUrl below returns a different
+// URL per organization).
+const jwksSetCache = new Map(); // jwksURL -> ReturnType<createRemoteJWKSet>
+
+function getJwksSet(jwksURL) {
+    let set = jwksSetCache.get(jwksURL);
+    if (!set) {
+        set = createRemoteJWKSet(new URL(jwksURL));
+        jwksSetCache.set(jwksURL, set);
+    }
+    return set;
+}
+
+// Each WSO2 IS organization signs its tokens with its own key, served from its
+// own JWKS endpoint (".../o/<orgId>/oauth2/jwks") rather than the root
+// organization's ("/oauth2/jwks") — so a single configured idp.jwksUrl can only
+// ever verify tokens for one organization. This derives the right endpoint from
+// the token's own (unverified at this point) issuer claim instead.
+//
+// Only the {orgId} PATH segment is taken from the issuer — never its origin.
+// The origin always comes from the configured, already-trusted jwksUrl. An
+// org id is an inert lookup key, so borrowing it is safe even though the
+// issuer claim isn't verified yet; borrowing the issuer's origin instead would
+// let a forged token redirect signature verification to an attacker-controlled
+// JWKS server. This also means a deployment reaching its IDP under a different
+// hostname than the one the IDP puts in its own issuer URLs (e.g. IS reached
+// via host.docker.internal from a container, while tokens it issues say
+// "localhost" because that's how it was addressed when asked) still resolves
+// correctly, since the mismatched part is exactly the part never trusted.
+const ORG_ISSUER_RE = /\/o\/([^/]+)\/oauth2\/token$/;
+
+function resolveJwksUrl(token, configuredJwksUrl) {
+    const decoded = safeDecodeJwt(token);
+    const match = ORG_ISSUER_RE.exec(decoded?.iss || '');
+    if (!match) return configuredJwksUrl;
+    const [, orgId] = match;
+    let configuredOrigin;
+    try {
+        configuredOrigin = new URL(configuredJwksUrl).origin;
+    } catch {
+        return configuredJwksUrl;
+    }
+    return `${configuredOrigin}/o/${orgId}/oauth2/jwks`;
+}
+
 async function verifyJwksWithRefresh(token, jwksURL, req) {
     try {
-        const jwks = await createRemoteJWKSet(new URL(jwksURL));
+        const jwks = getJwksSet(resolveJwksUrl(token, jwksURL));
         const jwtVerifyOptions = { algorithms: constants.JWT_ASYMMETRIC_ALGORITHMS };
         if (config.auth.idp?.issuer) jwtVerifyOptions.issuer = config.auth.idp.issuer;
         if (config.auth.idp?.audience) jwtVerifyOptions.audience = config.auth.idp.audience;
@@ -181,29 +229,54 @@ async function verifyBearerToken(token, req) {
 }
 
 /**
- * Resolves a caller-supplied organization identifier and sets req.orgId — but only
- * if it names the single organization this instance serves.
+ * Resolves a caller-supplied organization identifier and sets req.orgId.
  *
- * The database is shared across organizations, so a token minted by a trusted IDP
- * for a *different* organization still passes signature, expiry, and audience
- * checks. Without this comparison, "the IDP is trusted" would collapse into "any
- * token it issues is valid here", and the holder would read and write this
- * organization's data under their own tenant's credentials.
+ * By default (`fromTrustedClaim` false — the `organization` header path below),
+ * the identifier is only honored if it names the single organization this
+ * instance serves: the database is shared across organizations, and a request
+ * header is not something the portal can trust as a statement of identity.
+ * Without this comparison, a header would be an unauthenticated selector for any
+ * tenant's data in the shared database.
  *
- * The resolved uuid is compared rather than the raw identifier: `identifier` may be
- * a handle, a display name, or an idp_ref_id depending on which claim it came from,
- * and orgDao resolves all three. Comparing after resolution makes every spelling of
- * this organization match and every spelling of any other organization not match.
+ * When `fromTrustedClaim` is true — the three token/session org-claim call sites
+ * in authResolver below — the identifier comes from a claim inside an
+ * already-verified credential (a signed JWT, or a session populated from one) and
+ * is honored as its own organization instead of being confined to the org this
+ * instance is otherwise pinned to: an unknown organization is provisioned rather
+ * than rejected (seederService.seedOrg), and a known one is used regardless of
+ * pin. The claim was asserted by a trusted issuer, so "no such organization yet"
+ * and "a different organization" are both legitimate outcomes here, not the
+ * IDOR/enumeration risk the header path guards against.
+ *
+ * The resolved uuid is compared rather than the raw identifier (non-trusted path
+ * only): `identifier` may be a handle, a display name, or an idp_ref_id depending
+ * on which claim it came from, and orgDao resolves all three. Comparing after
+ * resolution makes every spelling of this organization match and every spelling
+ * of any other organization not match.
  *
  * @returns {Promise<Error|null>} null on success, or an Error with .status
  */
-async function resolveScopedOrg(req, identifier, source) {
+async function resolveScopedOrg(req, identifier, source, { fromTrustedClaim = false } = {}) {
     if (!identifier) return null;
     let resolvedUuid;
     try {
         resolvedUuid = await orgDao.getId(identifier);
     } catch (e) {
         if (e instanceof NotFoundError) {
+            if (fromTrustedClaim) {
+                try {
+                    const { org } = await seederService.seedOrg(identifier, { idpRefId: identifier });
+                    req.orgId = org.uuid;
+                    return null;
+                } catch (provisionError) {
+                    logger.error('Failed to provision organization from trusted claim', {
+                        error: provisionError.message, source,
+                    });
+                    const err = new Error('Internal Server Error');
+                    err.status = 500;
+                    return err;
+                }
+            }
             // Same response as a known-but-foreign organization below: a caller must
             // not be able to tell "no such organization" from "not this portal's
             // organization", which would turn this into an existence oracle over
@@ -217,6 +290,11 @@ async function resolveScopedOrg(req, identifier, source) {
         const err = new Error('Internal Server Error');
         err.status = 500;
         return err;
+    }
+
+    if (fromTrustedClaim) {
+        req.orgId = resolvedUuid;
+        return null;
     }
 
     let pinned;
@@ -243,6 +321,29 @@ async function resolveScopedOrg(req, identifier, source) {
 }
 
 /**
+ * Sets req.orgId to this instance's configured organization — the fallback for a
+ * credential that carries no organization of its own to resolve: mTLS (always),
+ * or a session/bearer credential presenting no organization claim when
+ * auth.enforceOrgAtLogin is false.
+ *
+ * @returns {Promise<Error|null>} null on success, or an Error with .status
+ */
+async function resolveDefaultOrg(req) {
+    try {
+        req.orgId = await orgContext.getOrgUuid();
+        return null;
+    } catch (e) {
+        logger.error('Configured organization could not be resolved', {
+            error: e.message,
+            handle: orgContext.getHandle(),
+        });
+        const err = new Error('Internal Server Error');
+        err.status = 500;
+        return err;
+    }
+}
+
+/**
  * Sets req.orgId for credentials that carry no organization of their own (mTLS) —
  * they are authenticated as this portal's operator, so the only organization they
  * can be acting on is the one this instance serves.
@@ -259,18 +360,7 @@ async function resolvePortalOrg(req) {
     if (orgHeader) {
         return resolveScopedOrg(req, orgHeader, 'organization header');
     }
-    try {
-        req.orgId = await orgContext.getOrgUuid();
-        return null;
-    } catch (e) {
-        logger.error('Configured organization could not be resolved', {
-            error: e.message,
-            handle: orgContext.getHandle(),
-        });
-        const err = new Error('Internal Server Error');
-        err.status = 500;
-        return err;
-    }
+    return resolveDefaultOrg(req);
 }
 
 /**
@@ -298,16 +388,23 @@ async function authResolver(req, res, next) {
             const platformToken = req.user[constants.ACCESS_TOKEN];
             const claims = platformToken ? decodePlatformJwtClaims(platformToken) : null;
             const orgHandle = req.user[constants.ROLES.ORGANIZATION_CLAIM];
-            // Fail closed on a session with no org claim, exactly as the IDP branch
-            // below does. resolveScopedOrg treats a falsy identifier as "nothing to
-            // check" and returns null, which would leave req.orgId undefined and let
-            // every tenant-scoped query run unscoped rather than be rejected.
+            // A session with no org claim falls back to this instance's configured
+            // organization unless auth.enforceOrgAtLogin requires the claim — same
+            // policy as the IDP branch below. resolveScopedOrg treats a falsy
+            // identifier as "nothing to check" and returns null, which would leave
+            // req.orgId undefined and let every tenant-scoped query run unscoped, so
+            // this is handled explicitly rather than left to it.
+            let orgErr;
             if (!orgHandle) {
-                const err = new Error('Missing organization claim in session');
-                err.status = 403;
-                return next(err);
+                if (config.auth.enforceOrgAtLogin) {
+                    const err = new Error('Missing organization claim in session');
+                    err.status = 403;
+                    return next(err);
+                }
+                orgErr = await resolveDefaultOrg(req);
+            } else {
+                orgErr = await resolveScopedOrg(req, orgHandle, 'platform-jwt session', { fromTrustedClaim: true });
             }
-            const orgErr = await resolveScopedOrg(req, orgHandle, 'platform-jwt session');
             if (orgErr) return next(orgErr);
             const userUuid = await resolveUserUuid(req, req.user[constants.USER_ID]);
             req.auth = {
@@ -341,14 +438,20 @@ async function authResolver(req, res, next) {
             // gate on config.auth.idp.claims.orgId, which has no default and is unset
             // in typical IDP configs, which would leave req.orgId empty and break every
             // tenant-scoped operation (reads return the wrong scope; writes fail the
-            // org_uuid foreign key). Fail closed when no org claim is present.
+            // org_uuid foreign key). No org claim falls back to the configured
+            // organization unless auth.enforceOrgAtLogin requires the claim.
             const sessionOrgClaim = req.user[constants.ROLES.ORGANIZATION_CLAIM];
+            let orgErr;
             if (!sessionOrgClaim) {
-                const err = new Error('Missing organization claim in session');
-                err.status = 403;
-                return next(err);
+                if (config.auth.enforceOrgAtLogin) {
+                    const err = new Error('Missing organization claim in session');
+                    err.status = 403;
+                    return next(err);
+                }
+                orgErr = await resolveDefaultOrg(req);
+            } else {
+                orgErr = await resolveScopedOrg(req, sessionOrgClaim, 'idp session', { fromTrustedClaim: true });
             }
-            const orgErr = await resolveScopedOrg(req, sessionOrgClaim, 'idp session');
             if (orgErr) return next(orgErr);
             const rawSub = req.user[constants.USER_ID];
             const userUuid = await resolveUserUuid(req, rawSub);
@@ -382,15 +485,20 @@ async function authResolver(req, res, next) {
             if (config.auth.mode === 'idp') {
                 const orgClaimKey = config.auth.claimMappings?.organization;
                 const tokenOrgClaim = (orgClaimKey ? getNestedClaim(decoded, orgClaimKey) : undefined) || decoded.org_handle;
+                let orgErr;
                 if (!tokenOrgClaim) {
-                    const err = new Error('Missing organization claim in token');
-                    err.status = 403;
-                    return next(err);
+                    if (config.auth.enforceOrgAtLogin) {
+                        const err = new Error('Missing organization claim in token');
+                        err.status = 403;
+                        return next(err);
+                    }
+                    orgErr = await resolveDefaultOrg(req);
+                } else {
+                    orgErr = await resolveScopedOrg(req, tokenOrgClaim, 'bearer token claim', { fromTrustedClaim: true });
                 }
-                const orgErr = await resolveScopedOrg(req, tokenOrgClaim, 'bearer token claim');
                 if (orgErr) return next(orgErr);
             } else if (decoded.org_handle) {
-                const orgErr = await resolveScopedOrg(req, decoded.org_handle, 'bearer token org_handle');
+                const orgErr = await resolveScopedOrg(req, decoded.org_handle, 'bearer token org_handle', { fromTrustedClaim: true });
                 if (orgErr) return next(orgErr);
             }
             const rawSub = decoded[constants.USER_ID];
