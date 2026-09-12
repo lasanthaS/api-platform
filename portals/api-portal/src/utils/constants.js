@@ -37,6 +37,13 @@ const apiPortalOrgPath = (_orgId) => `${PORTAL_BASE_PATH}/${API_PORTAL_BASE_SEGM
 module.exports = {
     // Allowed algorithms for IdP JWT verification.
     JWT_ASYMMETRIC_ALGORITHMS: ['RS256', 'RS384', 'RS512', 'PS256'],
+    // WSO2 IS's fixed, well-known federated-IDP identifier for its own B2B
+    // "Organization SSO" authenticator (authController.js's login()). Not
+    // deployer-configurable like auth.idp.fidp's other entries (google, github,
+    // ...) — every WSO2 IS install answers to this same name. Passed as `fidp` on
+    // the authorize request: with no `org` also supplied, IS prompts for one
+    // itself; with `org` supplied, it skips straight to that organization's login.
+    ORGANIZATION_SSO_FIDP: 'OrganizationSSO',
     API_PORTAL_API: {
         BASE_SEGMENT: API_PORTAL_BASE_SEGMENT,
         VERSION: API_PORTAL_VERSION,

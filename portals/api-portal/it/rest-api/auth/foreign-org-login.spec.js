@@ -32,15 +32,20 @@
 // clock failure — it is authController.handleLocalLogin's org_handle comparison
 // (src/controllers/authController.js), which nothing else in this suite executes.
 //
-// The IDP-mode equivalent (passportConfig.js's assertLoginOrgAllowed) stays outside
-// integration coverage — this fixture has no IDP, and standing up an OIDC provider
-// for one branch isn't worth it. What it does instead is delegate the decision to
-// orgContext.requirePinnedOrg, the same helper organizations.spec.js's 403 cases
-// drive end-to-end, so the untested part is the thin translation into a login
-// failure rather than a second copy of the rule.
+// The IDP-mode equivalent stays outside integration coverage — this fixture has
+// no IDP, and standing up an OIDC provider for one branch isn't worth it. Unlike
+// this local-auth path, an IDP-mode login now honors and auto-provisions any
+// organization its token names (passportConfig.js delegates to
+// authMiddleware.resolveScopedOrg, the same trusted-claim resolution a bearer
+// token gets) rather than rejecting anything but this instance's own — so there
+// is no IDP-mode rejection left to isolate the way this file isolates
+// handleLocalLogin's.
 //
-// The complementary request-time check (authResolver rejecting a token whose org
-// claim isn't this instance's) is covered by organizations/single-org-isolation.spec.js.
+// The organizations table below (`404s the organization platform-api issues
+// tokens for`) is unaffected by that: this fixture gives each portal instance
+// its own separate SQLite file (see docker-compose.test*.yaml), so `default`
+// doesn't exist in the other-org instance's database at all, regardless of any
+// pinning rule — a 404 here is "no such row," not "rejected by a pin."
 
 const supertest = require('supertest');
 const client = require('../support/client');

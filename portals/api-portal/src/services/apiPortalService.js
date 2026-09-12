@@ -53,9 +53,11 @@ function serveDefaultContentAsset(res, fileType, fileName) {
 
 const getOrganization = async (req, res) => {
     try {
-        // Only this instance's own organization is readable — the {orgId} parameter
-        // selects nothing else, even though the shared database holds other orgs.
-        await orgContext.requirePinnedOrg(req.params.orgId);
+        // Any organization already known to this portal is readable — see
+        // orgContext.requireKnownOrg. Which organization a given caller may reach
+        // is decided upstream (ensureAuthenticated.belongsToTargetOrg, authResolver's
+        // trusted-claim resolution), not here.
+        await orgContext.requireKnownOrg(req.params.orgId);
         const organization = await getOrganizationDetails(req.params.orgId);
         res.status(200).json(organization);
     } catch (error) {

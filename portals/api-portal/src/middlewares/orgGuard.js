@@ -18,13 +18,22 @@
 'use strict';
 
 /*
- * Pins the {orgHandle} segment of a page URL to the single organization this
- * instance serves (src/utils/orgContext.js).
+ * Resolves the {orgHandle} segment of a page URL against organizations this
+ * portal's (portal_id-scoped) database already knows about
+ * (src/utils/orgContext.js's requireKnownOrg).
  *
  * The database is shared across organizations, so without this the URL segment is
- * an unauthenticated selector for *any* organization's portal content: a visitor
- * could read another tenant's published APIs, docs, and theming by editing the
- * first path segment. Rejecting anything but the configured handle closes that.
+ * an unauthenticated selector for *any* string: a visitor could otherwise probe
+ * arbitrary handles rather than only ones that exist. Requiring the segment to
+ * resolve to a real organization closes that; it does NOT by itself decide
+ * whether the *caller* may be there — ensureAuthenticated.belongsToTargetOrg is
+ * what compares an authenticated session's own org claim against the organization
+ * resolved here, the same way authResolver's trusted-claim branches do for the
+ * REST API. An org that only exists in a *different* portal_id still doesn't
+ * resolve here (requireKnownOrg is portal_id-scoped), and this layer never
+ * creates one — provisioning an org from a trusted claim happens at login
+ * (passportConfig.js) or a bearer-token call (authMiddleware.js), both of
+ * which have a verified identity behind them; a bare URL segment does not.
  *
  * Registered through `router.param()` rather than a path-matching middleware on
  * purpose: the param callback receives the exact value the route handler will go
@@ -38,16 +47,12 @@
 const { config } = require('../config/configLoader');
 const logger = require('../config/logger');
 const orgContext = require('../utils/orgContext');
-const { NotFoundError } = require('../utils/errors/customErrors');
+const { CustomError } = require('../utils/errors/customErrors');
 
 /**
- * Express param callback: 404s unless `value` is this instance's organization
- * handle, and populates req.orgId with the resolved uuid when it is.
- *
- * Only the canonical handle is accepted. orgDao.get() would also resolve a display
- * name or idp_ref_id, but a single-organization portal has exactly one correct URL
- * for itself, and matching the handle alone keeps this off the database entirely
- * for the rejection case.
+ * Express param callback: 404s unless `value` names an organization already
+ * known to this portal, and populates req.orgId with the resolved uuid when it
+ * does.
  *
  * @param {(res, err) => void} [onReject] how to answer a rejection. Omitted, the
  *   error goes to `next()` and app.js renders an HTML error page — right for the
@@ -55,39 +60,32 @@ const { NotFoundError } = require('../utils/errors/customErrors');
  *   callers are programs. Those pass a responder that emits their own error shape.
  */
 async function pinOrgParam(req, res, next, value, onReject) {
-    // Design mode renders from disk and has no organization to pin — config
-    // validation skips the handle check there, so there is nothing to compare to.
+    // Design mode renders from disk and has no organization to resolve — config
+    // validation skips this check there, so there is nothing to look up.
     if (config.designMode?.enabled) return next();
 
-    if (String(value || '').toLowerCase() !== orgContext.getHandle()) {
-        logger.warn('Rejected request for a non-local organization', {
-            requested: value,
-            operation: 'pinOrgParam',
-        });
-        const err = new Error('Not Found');
-        err.status = 404;
-        return onReject ? onReject(res, err) : next(err);
-    }
-
     try {
-        req.orgId = await orgContext.getOrgUuid();
+        req.orgId = await orgContext.requireKnownOrg(value);
+        return next();
     } catch (error) {
-        // The handle matched config but no such row exists — the portal itself is
-        // misconfigured (or not yet seeded), which is a server-side fault. Do not
-        // report it as a 404: that would tell a visitor their URL was wrong when it
-        // was correct, and redirecting to '/' (which points back here) would loop.
-        const status = error instanceof NotFoundError ? 500 : (error.status || 500);
-        logger.error('Configured organization could not be resolved', {
-            handle: orgContext.getHandle(),
+        if (error instanceof CustomError && error.statusCode === 403) {
+            logger.warn('Rejected request for an unknown organization', {
+                requested: value,
+                operation: 'pinOrgParam',
+            });
+            const err = new Error('Not Found');
+            err.status = 404;
+            return onReject ? onReject(res, err) : next(err);
+        }
+        logger.error('Organization lookup failed', {
+            requested: value,
             error: error.message,
             operation: 'pinOrgParam',
         });
         const err = new Error('Internal Server Error');
-        err.status = status;
+        err.status = 500;
         return onReject ? onReject(res, err) : next(err);
     }
-
-    return next();
 }
 
 /**

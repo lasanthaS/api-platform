@@ -18,19 +18,29 @@
 'use strict';
 
 /*
- * The single organization and portal this portal instance serves.
+ * This instance's own organization and portal, plus organization resolution
+ * shared by callers that don't require the narrower "is this MY organization"
+ * question.
  *
  * The database schema is multi-organization — one shared database can hold many
- * organizations, each served by its own portal instance — but a given instance is
- * pinned to exactly one org, named by `organization.handle` in config, and exactly
- * one portal, identified by `organization.portal_id` in config.toml, resolved
- * from the APIP_AP_ORGANIZATION_PORTAL_ID env var via the {{ env }} template token.
- * This module is the only place that resolves both,
- * and every org/portal-scoped surface goes through here:
+ * organizations, each served by its own portal instance — and a given instance
+ * still has exactly one *configured, seeded-on-startup* org (`organization.handle`)
+ * and one portal (`organization.portal_id`, resolved from the
+ * APIP_AP_ORGANIZATION_PORTAL_ID env var via the {{ env }} template token). This
+ * module is the only place that resolves both:
  *
- *   - authMiddleware.js  — verifies a token/header-supplied org resolves to the pin
- *   - orgGuard.js        — verifies the {orgHandle} URL segment matches the pin
- *   - webhook workers    — scope their global claim queries to the pinned org
+ *   - getOrgUuid()/isPinnedOrg() — "is this THIS instance's own configured org" —
+ *     used for seeding, defaults, and the mTLS/`organization`-header path
+ *     (authMiddleware.js's resolvePortalOrg), none of which carry a caller
+ *     identity that could name a different org legitimately.
+ *   - requireKnownOrg() — "does this identifier name ANY org already known to
+ *     this portal_id's database" — used by orgGuard.js (page URL segments) and
+ *     the organization settings service methods. A token/session's OWN trusted
+ *     claim is resolved through here too (authMiddleware.js's
+ *     resolveScopedOrg, passportConfig.js's login), but *authorizing* which
+ *     organization a caller may reach is this function's callers' job
+ *     (ensureAuthenticated.belongsToTargetOrg, the trusted-claim branches
+ *     themselves), not this module's.
  *
  * The organization row itself is seeded on startup (seederService.js), so
  * getOrgUuid() is expected to succeed from then on. It is resolved lazily rather
@@ -241,21 +251,30 @@ async function isPinnedOrg(uuid) {
 /**
  * Resolves a caller-supplied organization identifier (a handle, display name, or
  * idp_ref_id — whatever an {orgId} path parameter carries) and returns its uuid,
- * throwing CustomError(403) unless it names this instance's organization.
+ * throwing CustomError(403) unless it names an organization that already exists
+ * in this portal's (portal_id-scoped) database.
  *
- * Lives here, and is called from the service layer, so every entry point that
- * reaches an organization-scoped service method is covered — not just the REST
- * handler that happens to be wired up today.
+ * Lives here, and is called from the service layer and orgGuard.js, so every
+ * entry point that reaches an organization-scoped resource is covered by the
+ * same rule. It does NOT require the identifier to be *this instance's own*
+ * configured organization — see isPinnedOrg/getOrgUuid for that narrower
+ * question, still used where it applies (seeding, defaults, the mTLS/header
+ * path). This function only answers "is this a real organization at all,"
+ * which is what page routes and organization settings need: authorization for
+ * *which* organization a caller may reach is decided elsewhere, by comparing
+ * the caller's own verified claim against the organization resolved here
+ * (ensureAuthenticated.belongsToTargetOrg, authResolver's trusted-claim path).
  *
- * An unknown organization and a known-but-foreign one both yield the same 403: a
- * caller must not be able to use the difference to discover which organizations
- * exist in the shared database.
+ * An unknown organization is rejected with the same 403 orgDao.getId's
+ * NotFoundError would otherwise surface as, so a caller can't use a different
+ * status code to distinguish "no such organization" from some other failure.
  *
  * @param {string} identifier
- * @returns {Promise<string>} the resolved uuid, guaranteed to be the pinned org
- * @throws {CustomError} 403 when it is any other organization
+ * @returns {Promise<string>} the resolved uuid
+ * @throws {CustomError} 403 when no organization in this portal's database
+ *   matches the identifier
  */
-async function requirePinnedOrg(identifier) {
+async function requireKnownOrg(identifier) {
     let resolvedUuid = null;
     try {
         resolvedUuid = await orgDao.getId(identifier);
@@ -263,12 +282,11 @@ async function requirePinnedOrg(identifier) {
         if (!(err instanceof NotFoundError)) throw err;
     }
 
-    if (resolvedUuid && (await isPinnedOrg(resolvedUuid))) return resolvedUuid;
+    if (resolvedUuid) return resolvedUuid;
 
-    logger.warn('Rejected operation on a non-local organization', {
+    logger.warn('Rejected operation on an unknown organization', {
         requested: identifier,
-        expected: getHandle(),
-        operation: 'requirePinnedOrg',
+        operation: 'requireKnownOrg',
     });
     throw new CustomError(403, 'Forbidden', 'This operation is not available for the requested organization.');
 }
@@ -281,7 +299,7 @@ module.exports = {
     getIdpOrgId,
     getOrgUuid,
     isPinnedOrg,
-    requirePinnedOrg,
+    requireKnownOrg,
     resetCache,
     getPortalId,
 };

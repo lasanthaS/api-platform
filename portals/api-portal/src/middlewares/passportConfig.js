@@ -23,53 +23,8 @@ const { config } = require('../config/configLoader');
 const { portalRoles } = require('./authorization');
 const constants = require('../utils/constants');
 const logger = require('../config/logger');
-const orgContext = require('../utils/orgContext');
-const { CustomError } = require('../utils/errors/customErrors');
-
-/**
- * Checks an IDP-asserted organization claim against the organization this instance
- * serves.
- *
- * The decision itself is orgContext.requirePinnedOrg's — deliberately, rather than
- * a second resolve-and-compare written out here. There is no IDP in the integration
- * fixture, so this path can only be reached in a real IDP deployment; sharing the
- * helper means the rule being applied is the one the REST-API suite already
- * exercises end-to-end (organizations.spec.js's 403s), and this function is reduced
- * to translating its outcome into a login failure. It also resolves the claim
- * before comparing, so a handle, display name, or idp_ref_id spelling of the same
- * organization all match — which matters here because the flavour of the mapped
- * claim is IDP-specific.
- *
- * A rejection is a flat 403 whether the organization is unknown or merely someone
- * else's (requirePinnedOrg collapses the two), so a login attempt can't be used to
- * probe which organizations exist in the shared database.
- *
- * @param {string} organizationId the mapped organization claim from the ID token
- * @returns {Promise<Error|null>} null when the login may proceed, else an Error
- *   carrying the status the callback route should render
- */
-async function assertLoginOrgAllowed(organizationId) {
-    try {
-        await orgContext.requirePinnedOrg(organizationId);
-        return null;
-    } catch (err) {
-        if (err instanceof CustomError && err.statusCode === 403) {
-            logger.warn('Rejected login: token organization is not this portal\'s', {
-                expected: orgContext.getHandle(),
-                asserted: organizationId,
-            });
-            const failure = new Error('Forbidden');
-            failure.status = 403;
-            return failure;
-        }
-        // A database/lookup fault, not a verdict about the organization — don't let
-        // it read as "your organization is wrong".
-        logger.error('Organization lookup failed during login', { error: err.message });
-        const failure = new Error('Login failed');
-        failure.status = 500;
-        return failure;
-    }
-}
+const orgDao = require('../dao/organizationDao');
+const { resolveScopedOrg } = require('./authMiddleware');
 
 function configurePassport(SERVER_ID) {
     if (config.auth.mode === 'idp') {
@@ -98,15 +53,33 @@ function configurePassport(SERVER_ID) {
             }
             let isAdmin = false;
             const decodedJWT = safeDecodeJwt(params.id_token) || {};
-            const decodedAccessToken = safeDecodeJwt(accessToken);
-            const firstName = decodedJWT['given_name'] || decodedJWT['nickname'];
+            const decodedAccessToken = safeDecodeJwt(accessToken) || {};
+            // Debug-only (auth.logging.level = "debug") — direct way to see which of
+            // these two tokens actually carries a given claim for a given IDP/
+            // authenticator, since it isn't always the same one (see roles below).
+            logger.debug('IDP login: decoded tokens', { idToken: decodedJWT, accessToken: decodedAccessToken });
+            // given_name/nickname require the user's profile to have a display name set,
+            // which isn't guaranteed — a freshly provisioned B2B user commonly has only a
+            // username. Fall back through the standard OIDC username claim, then WSO2's
+            // own (always populated, since it's the login identifier itself), then the
+            // bare subject — so the header never renders blank next to the avatar.
+            const firstName = decodedJWT['given_name'] || decodedJWT['nickname']
+                || decodedJWT['preferred_username'] || decodedJWT['username'] || decodedJWT['sub'];
             const lastName = decodedJWT['family_name'];
             const organizationId = getNestedClaim(decodedJWT, config.auth.claimMappings.organization) ?? '';
-            const rawRoles = getNestedClaim(decodedJWT, config.auth.claimMappings.roles) ?? '';
+            // Prefer the ACCESS token for roles/groups, falling back to the ID token:
+            // matches authMiddleware.js's bearer-token path (which has only ever read
+            // roles from the access token), and WSO2 IS's own role-claim population can
+            // land a role assignment in the access token without it also reaching the ID
+            // token — an OIDC-authenticator-dependent gap, not something either token's
+            // absence should be treated as "no role assigned".
+            const rawRoles = getNestedClaim(decodedAccessToken, config.auth.claimMappings.roles)
+                ?? getNestedClaim(decodedJWT, config.auth.claimMappings.roles) ?? '';
             const roles = Array.isArray(rawRoles)
                 ? rawRoles
                 : String(rawRoles).split(/[\s,]+/).filter(Boolean);
-            const rawGroups = getNestedClaim(decodedJWT, config.auth.claimMappings.groups) ?? '';
+            const rawGroups = getNestedClaim(decodedAccessToken, config.auth.claimMappings.groups)
+                ?? getNestedClaim(decodedJWT, config.auth.claimMappings.groups) ?? '';
             const groups = Array.isArray(rawGroups)
                 ? rawGroups
                 : String(rawGroups).split(/[\s,]+/).filter(Boolean);
@@ -114,18 +87,23 @@ function configurePassport(SERVER_ID) {
             if (roles.includes(adminRole)) {
                 isAdmin = true;
             }
-            // The IDP is trusted to say who the user is, not which organization this
-            // portal serves. A token it correctly signed for a *different*
-            // organization passes every signature/expiry/audience check, so compare
-            // the mapped organization claim against the one this instance is pinned
-            // to and refuse the login otherwise — authResolver would reject each
-            // subsequent request anyway, leaving the user with a session that 403s
-            // on every page. Skipped when the claim is absent: that case is already
-            // failed closed by authResolver, which needs an organization claim in
-            // IDP mode.
+            // The IDP is trusted to say who the user is and, via its org claim, which
+            // organization this login belongs to — resolved exactly like a bearer
+            // token's claim (authMiddleware.resolveScopedOrg), auto-provisioning an
+            // organization this portal hasn't seen before rather than rejecting it.
+            // Skipped when the claim is absent: that case is already failed closed by
+            // authResolver, which needs an organization claim in IDP mode for the
+            // REST API this session will go on to call.
+            let resolvedOrgHandle = '';
             if (organizationId) {
-                const orgErr = await assertLoginOrgAllowed(organizationId);
+                const orgErr = await resolveScopedOrg(req, organizationId, 'idp login claim', { fromTrustedClaim: true });
                 if (orgErr) return done(orgErr);
+                try {
+                    resolvedOrgHandle = (await orgDao.getByUuid(req.orgId)).handle;
+                } catch (err) {
+                    logger.error('Failed to resolve organization handle after login', { error: err.message });
+                    return done(err);
+                }
             }
 
             const returnTo = req.session.returnTo;
@@ -148,6 +126,12 @@ function configurePassport(SERVER_ID) {
                 idToken: params.id_token,
                 email: decodedJWT['email'] || req.session.username,
                 [constants.ROLES.ORGANIZATION_CLAIM]: organizationId,
+                // The organization the claim actually resolved to — used once, right
+                // after login, to redirect into that organization's own view rather
+                // than the URL segment the login button happened to be clicked from
+                // (authController.handleCallback). Not carried into the session by
+                // serializeUser below: nothing after this one redirect needs it.
+                resolvedOrgHandle,
                 returnTo: req.session.returnTo,
                 accessToken,
                 refreshToken,

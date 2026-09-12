@@ -609,4 +609,5 @@ module.exports = {
     apiKeyAuth,
     resolveUserUuid,
     verifyBearerToken,
+    resolveScopedOrg,
 };

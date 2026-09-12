@@ -62,18 +62,24 @@ const login = async (req, res, next) => {
         const fidp = req.query.fidp;
         const fidpMap = config.auth.idp?.fidp || {};
         if (config.auth.mode === 'idp') {
-            // IDP mode: redirect directly to the IDP, no intermediate login page
-            const orgDetails = await orgDao.get(orgName);
-            const orgIdentifier = orgDetails?.idp_ref_id;
+            const orgQuery = typeof req.query.org === 'string' ? req.query.org.trim() : '';
             if (fidp && fidpMap[fidp]) {
                 if (fidp === 'enterprise' && req.query.username) {
                     req.session.username = req.query.username;
-                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], username: req.query.username, ...(orgIdentifier && { org: orgIdentifier }) })(req, res, next);
+                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], username: req.query.username, ...(orgQuery && { org: orgQuery }) })(req, res, next);
                 } else {
-                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], ...(orgIdentifier && { org: orgIdentifier }) })(req, res, next);
+                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], ...(orgQuery && { org: orgQuery }) })(req, res, next);
                 }
             } else {
-                await passport.authenticate('oauth2', { ...(orgIdentifier && { org: orgIdentifier }) })(req, res, next);
+                // No specific federated IDP requested — route through the IDP's own
+                // Organization SSO authenticator (ORGANIZATION_SSO_FIDP) rather than its
+                // default local login form, which has no way to scope itself to an
+                // organization's user store on its own. With no org known yet
+                // (orgQuery empty — the common case, a plain login click) the IDP prompts
+                // for one itself. With org known (orgQuery set — e.g. an onboarding/invite
+                // link built with ?org=<handle>) it skips that prompt entirely and goes
+                // straight to that organization's own login.
+                await passport.authenticate('oauth2', { fidp: constants.ORGANIZATION_SSO_FIDP, ...(orgQuery && { org: orgQuery }) })(req, res, next);
             }
         } else {
             // Local auth mode: show username/password form, themed with the active
@@ -121,11 +127,22 @@ const handleCallback = async (req, res, next) => {
                     return next(err);
                 }
                 res.set('Cache-Control', 'no-store');
-                let returnTo = req.user.returnTo;
-                if (config.auth.idp?.orgCallback && returnTo == null) {
-                    returnTo = `${constants.ROUTE.BASE_PATH}/${req.params.orgName}`;
+                const resolvedOrgHandle = req.user.resolvedOrgHandle;
+                let returnTo;
+                if (resolvedOrgHandle && resolvedOrgHandle !== req.params.orgName) {
+                    // The login's org claim resolved to a different organization than
+                    // the URL the login button was clicked from (e.g. logging into
+                    // org1 from the default org's login page) — land in that
+                    // organization's own view instead of a returnTo path that was
+                    // captured under the wrong one.
+                    returnTo = `${constants.ROUTE.BASE_PATH}/${resolvedOrgHandle}${constants.ROUTE.VIEWS_PATH}${req.user.view || 'default'}`;
+                } else {
+                    returnTo = req.user.returnTo;
+                    if (config.auth.idp?.orgCallback && returnTo == null) {
+                        returnTo = `${constants.ROUTE.BASE_PATH}/${req.params.orgName}`;
+                    }
+                    returnTo = returnTo || `${constants.ROUTE.BASE_PATH}/${req.params.orgName}`;
                 }
-                returnTo = returnTo || `${constants.ROUTE.BASE_PATH}/${req.params.orgName}`;
                 delete req.session.returnTo;
                 req.session.portalId = orgContext.getPortalId();
                 logUserAction('USER_LOGIN', req, { orgName: req.params.orgName });
