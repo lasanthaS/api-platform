@@ -8,16 +8,18 @@
 # License at http://www.apache.org/licenses/LICENSE-2.0
 # --------------------------------------------------------------------
 #
-# Shared quickstart setup script for both the AI Workspace and the Developer
-# Portal quickstarts (and their standalone distribution zips). Both stacks
-# run the same three services — platform-api, ai-workspace, api-portal —
-# behind docker-compose profiles, so this single script provisions everything
-# either stack (or both at once) might need:
+# Shared quickstart setup script for the AI Workspace, the Developer Portal, and
+# the API Control Plane quickstarts (and their standalone distribution zips).
+# Every one of these stacks runs the same Platform API service alongside its own
+# headline component (ai-workspace, api-portal, or api-control-plane) behind
+# docker-compose profiles, so this single script provisions everything any of
+# them (or several at once) might need:
 #
-#   - a self-signed TLS certificate shared by all three services
+#   - a self-signed TLS certificate shared by every service in the stack
 #   - API Portal's own encryption key and session secret, written to
 #     resources/keys/api-portal-encryption.key and api-portal-session-secret and
-#     read by config.toml via {{ file }} — never stored as an env var
+#     read by config.toml via {{ file }} — never stored as an env var. Generated
+#     unconditionally (harmless, just unused by a stack that doesn't run API Portal).
 #   - the Platform API's at-rest encryption key, written to resources/keys/encryption.key
 #     and read by config.toml via {{ file }} — like the JWT keypair below, never stored
 #     as an env var
@@ -31,7 +33,7 @@
 #     Read by the docker compose CLI (not by the containers) to prefix every
 #     container, network, and volume, so another extraction of the same zip on
 #     this host cannot bind to this stack's volumes — the Platform API's
-#     database and the API Portal's data.
+#     database and (for API Portal/AI Workspace stacks) that component's own data.
 #
 # This is a ONE-TIME step. It never runs as part of container startup — every
 # service fails closed at startup if a required secret is missing, rather
@@ -41,13 +43,14 @@
 # and admin credentials. --force deliberately does NOT touch the at-rest
 # encryption key — see --rotate-encryption-key below.
 #
-# Usage (run from either portals/ai-workspace or portals/api-portal, or
-# from the root of a standalone distribution zip — same script, same layout):
+# Usage (run from portals/ai-workspace, portals/api-portal, or
+# portals/api-control-plane, or from the root of a standalone distribution zip
+# — same script, same layout):
 #   ../scripts/setup.sh    # inside the repo checkout
 #   ./scripts/setup.sh     # inside a distribution zip (copied there by `make dist`)
 #   docker compose up      # runs in the foreground; starts the profiles listed in
 #                          # COMPOSE_PROFILES in ./.env — edit that line to add
-#                          # ai-workspace / api-portal / platform-api
+#                          # ai-workspace / api-portal / api-control-plane / platform-api
 #
 # Flags:
 #   --force                   regenerate TLS cert, JWT signing keypair, and
@@ -79,12 +82,13 @@ ROTATE_ENCRYPTION_KEY=false
 # that a plain `docker compose up` (no --profile flag) starts the right
 # services for this pack. Each pack's `make dist` target bakes in its own
 # value here via sed when it copies this shared script into the distribution
-# zip (see the `dist` target in portals/ai-workspace/Makefile and
-# portals/api-portal/Makefile). Left at this placeholder, it falls back
+# zip (see the `dist` target in portals/ai-workspace/Makefile,
+# portals/api-portal/Makefile, and portals/api-control-plane/Makefile). Left at
+# this placeholder, it falls back
 # to detect_pack()'s directory-name detection below, which is what happens
 # when this script runs straight out of a repo checkout (not a dist zip).
 DEFAULT_COMPOSE_PROFILES="__DEFAULT_COMPOSE_PROFILES__"
-# Which pack this is ("api-portal" or "ai-workspace") — `make dist`
+# Which pack this is ("api-portal", "ai-workspace", or "api-control-plane") — `make dist`
 # bakes this in the same way as DEFAULT_COMPOSE_PROFILES above, so a shipped
 # distribution zip never needs to detect it at runtime. Left at this
 # placeholder, detect_pack() below falls back to this pack's own directory
@@ -122,8 +126,10 @@ Usage: ./setup.sh [--force] [--certs-only] [--rotate-encryption-key] [--profiles
                              itself treated as confirmation.
   --profiles=<a,b,...>      override the default COMPOSE_PROFILES value this
                              script writes to .env. Valid profiles:
-                             ai-workspace, api-portal, platform-api — e.g.
+                             ai-workspace, api-portal, api-control-plane,
+                             platform-api — e.g.
                              --profiles=ai-workspace,api-portal,platform-api
+                             or --profiles=api-control-plane,platform-api
                              or --profiles=platform-api
 
 ADMIN_USERNAME / ADMIN_PASSWORD environment variables skip the interactive
@@ -172,7 +178,7 @@ elif [[ -f "$THIS_DIR/docker-compose.yaml" ]]; then
 elif [[ -f "$THIS_DIR/../docker-compose.yaml" ]]; then
     ROOT_DIR="$(cd "$THIS_DIR/.." && pwd)"
 else
-    fail "could not find docker-compose.yaml in the current directory, next to this script, or its parent directory. Run this from portals/ai-workspace, portals/api-portal, or a distribution zip's root."
+    fail "could not find docker-compose.yaml in the current directory, next to this script, or its parent directory. Run this from portals/ai-workspace, portals/api-portal, portals/api-control-plane, or a distribution zip's root."
 fi
 cd "$ROOT_DIR"
 
@@ -294,6 +300,8 @@ detect_pack() {
         echo "api-portal"
     elif [[ "$dir" == "ai-workspace" ]]; then
         echo "ai-workspace"
+    elif [[ "$dir" == "api-control-plane" ]]; then
+        echo "api-control-plane"
     else
         echo "unknown"
     fi
@@ -457,6 +465,7 @@ else
     case "$PACK" in
         ai-workspace) COMPOSE_PROFILES_VALUE="ai-workspace,platform-api" ;;
         api-portal) COMPOSE_PROFILES_VALUE="api-portal,platform-api" ;;
+        api-control-plane) COMPOSE_PROFILES_VALUE="api-control-plane,platform-api" ;;
         *) COMPOSE_PROFILES_VALUE="" ;;
     esac
 fi
@@ -485,7 +494,7 @@ else
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
         -keyout "$CERTS_DIR/key.pem" -out "$CERTS_DIR/cert.pem" \
         -subj "/O=WSO2 API Platform/CN=localhost" \
-        -addext "subjectAltName=DNS:localhost,DNS:*.localhost,DNS:platform-api,DNS:ai-workspace,DNS:api-portal,DNS:host.docker.internal,IP:127.0.0.1" \
+        -addext "subjectAltName=DNS:localhost,DNS:*.localhost,DNS:platform-api,DNS:ai-workspace,DNS:api-portal,DNS:api-control-plane,DNS:host.docker.internal,IP:127.0.0.1" \
         >/dev/null 2>&1
     chmod "$FILE_MODE" "$CERTS_DIR/cert.pem"
     restrict_secret_file "$CERTS_DIR/key.pem"
@@ -653,9 +662,9 @@ echo
 # written above, so point at it rather than restating the value here.
 if [[ -n "$COMPOSE_PROFILES_VALUE" ]]; then
     echo "  To run more components, add their profiles to COMPOSE_PROFILES in .env"
-    echo "  (ai-workspace, api-portal, platform-api)."
+    echo "  (ai-workspace, api-portal, api-control-plane, platform-api)."
 else
     echo "  No components are set for this pack yet — add a COMPOSE_PROFILES line to"
-    echo "  .env (ai-workspace, api-portal, platform-api) before starting."
+    echo "  .env (ai-workspace, api-portal, api-control-plane, platform-api) before starting."
 fi
 echo

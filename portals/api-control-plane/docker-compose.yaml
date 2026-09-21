@@ -1,0 +1,72 @@
+# --------------------------------------------------------------------
+# Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
+#
+# WSO2 LLC. licenses this file to you under the Apache License,
+# Version 2.0 (the "License"); you may not use this file except
+# in compliance with the License. You may obtain a copy of the
+# License at http://www.apache.org/licenses/LICENSE-2.0
+# --------------------------------------------------------------------
+# API Control Plane + Platform API — standalone release compose file. See
+# ../scripts/setup.sh (or `make dist`'s distribution/README.md) for usage.
+# Each service's `profiles:` list names only itself — never a sibling pack's
+# profile — so every profile can be enabled independently; combinations come
+# from COMPOSE_PROFILES/--profile listing multiple names, not from one
+# service pulling in another's profile.
+#
+# For local iteration against a working-tree build instead of a published
+# image, override with a sibling docker-compose.override.yaml (or `docker
+# compose build` after retagging), rather than editing the pinned `image:`
+# lines below — see README.md.
+
+services:
+
+  platform-api:
+    image: ghcr.io/wso2/api-platform/platform-api:0.17.0-SNAPSHOT
+    restart: unless-stopped
+    profiles: ["platform-api"]
+    command: ["-config", "/etc/platform-api/config.toml"]
+    env_file:
+      - path: api-platform.env
+        required: true
+        format: raw
+    volumes:
+      - ../../platform-api/config/config.toml:/etc/platform-api/config.toml:ro
+      - ../../platform-api/resources/role-to-scope-mapping.yaml:/etc/platform-api/role-to-scope-mapping.yaml:ro
+      - platform-api-data:/app/data
+      - ./resources/certificates:/app/data/certs:ro
+      - ./resources/keys:/etc/platform-api/keys:ro
+    ports:
+      - "9243:9243"
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:9243/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  api-control-plane:
+    image: ghcr.io/wso2/api-platform/api-control-plane:0.1.0-SNAPSHOT
+    restart: unless-stopped
+    profiles: ["api-control-plane"]
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    env_file:
+      - path: api-platform.env
+        required: true
+        format: raw
+    volumes:
+      - ./configs/config.toml:/etc/api-control-plane/config.toml:ro
+      - ./resources/certificates:/etc/api-control-plane/tls:ro
+    ports:
+      - "9743:9743"
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:9743/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  platform-api-data:
+    driver: local

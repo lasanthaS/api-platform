@@ -4,3 +4,8 @@
 /target/
 .env*.local
 /src/i18n/compiled/
+
+# Local docker-compose quickstart secrets (see docker-compose.yaml)
+api-platform.env
+resources/certificates/
+resources/keys/

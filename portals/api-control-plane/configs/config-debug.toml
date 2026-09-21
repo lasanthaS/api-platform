@@ -1,0 +1,38 @@
+# ── Local host-process debug overlay (API Control Plane BFF) ─────────────────
+# Layered ON TOP of configs/config.toml via a second `-config` flag (see
+# Makefile's bff-run target). `-config` is repeatable and the loader merges
+# files in order with last-wins precedence per key, so these values override
+# the shipped defaults while leaving every other key untouched.
+#
+# Purpose: keep debug-only values OUT of config.toml, which ships in the
+# distribution and is mounted into the container as-is. This file is loaded
+# ONLY by the host-run BFF while debugging — it is never mounted into the
+# container.
+
+[api_control_plane]
+
+[api_control_plane.logging]
+level = "debug"
+
+# The BFF's own HTTPS listener. In dev the Vite server (:3000) proxies /api,
+# /proxy, etc. to https://localhost:8083 (see vite.config.ts BFF_DEV_TARGET),
+# so the BFF must listen on 8083 — the shipped config.toml defaults to 9743,
+# which would collide with a container/production instance running on the
+# same host. cert_file/key_file are relative to this config's cwd
+# (portals/api-control-plane/bff), i.e. portals/api-control-plane/resources/
+# certificates — generate them once with `../scripts/setup.sh --certs-only`
+# (gitignored; not committed).
+[api_control_plane.server.https]
+port      = 8083
+cert_file = "../resources/certificates/cert.pem"
+key_file  = "../resources/certificates/key.pem"
+
+# Talk to the locally-run Platform API over its self-signed dev cert.
+# tls_skip_verify short-circuits ca_file loading, so no CA path is needed on
+# the host. CONTROL_PLANE_URL/CONTROL_PLANE_TLS_SKIP_VERIFY passed by
+# `make bff-run` (via APIP_ACP_CONTROL_PLANE_*  env vars) still take
+# precedence over the literals below, so pointing at a different Platform API
+# doesn't require editing this file.
+[api_control_plane.control_plane]
+url             = '{{ env "APIP_ACP_CONTROL_PLANE_URL" "https://localhost:9243" }}'
+tls_skip_verify = '{{ env "APIP_ACP_CONTROL_PLANE_TLS_SKIP_VERIFY" "true" }}'
