@@ -42,6 +42,17 @@ export type RuntimeConfig = {
    */
   billingProxyEnabled: boolean;
   /**
+   * Set when the BFF has a "cloud" named upstream configured (cloud only).
+   * When true, cloud Insights extensions may call it via the same-origin
+   * proxy (/proxy/cloud/...) — the browser never learns the real cloud URL.
+   */
+  cloudProxyEnabled: boolean;
+  /**
+   * Moesif wrap/basic iframe origin (HTTPS). Absent when Insights embed is
+   * not configured for this deployment.
+   */
+  moesifAppUrl: string;
+  /**
    * Same-origin path the BFF proxies to the Platform API (typically
    * "/proxy") — the browser only ever calls this BFF's own origin, which
    * injects the session's bearer token server-side.
@@ -69,6 +80,13 @@ export type RuntimeConfig = {
    * not a hardcoded link.
    */
   moesifWebUrl: string;
+  /**
+   * API Designer for VS Code. The wizard's "design from scratch" step hands
+   * off to the extension rather than hosting a canvas here, so the
+   * deployment's own marketplace and docs links are config, not hardcoded.
+   */
+  apiDesignerVsCodeUrl: string;
+  apiDesignerDocsUrl: string;
   privacyPolicyLink: string;
   projectApiBaseUrl: string;
   termsOfUseLink: string;
@@ -83,6 +101,10 @@ type LegacyWindowConfig = Partial<{
   ORGANIZATION_API_URL: string;
   BILLING_PROXY_ENABLED: string;
   billingProxyEnabled: boolean | string;
+  CLOUD_PROXY_ENABLED: string;
+  cloudProxyEnabled: boolean | string;
+  MOESIF_APP_URL: string;
+  moesifAppUrl: string;
   DEFAULT_LOCALE: string;
   defaultLocale: string;
   PLATFORM_API_BASE_URL: string;
@@ -93,6 +115,8 @@ type LegacyWindowConfig = Partial<{
   POLICY_HUB_BASE_URL: string;
   POLICY_HUB_WEB_URL: string;
   MOESIF_WEB_URL: string;
+  API_DESIGNER_VSCODE_URL: string;
+  API_DESIGNER_DOCS_URL: string;
   PRIVACY_POLICY_LINK: string;
   PROJECT_API_BASE_URL: string;
   TERMS_OF_USE_LINK: string;
@@ -145,6 +169,9 @@ const resolvedPlatformApiBaseUrl =
   fromWindow().platformApiBaseUrl ||
   '';
 
+const DEV_POLICY_HUB_BASE_URL =
+  'https://db720294-98fd-40f4-85a1-cc6a3b65bc9a-dev.e1-us-east-azure.choreoapis.dev/api-platform/policy-hub-api/policy-hub-public/v1.0';
+
 const hostFromUrl = (url: string) => {
   try {
     return url ? new URL(url).host : '';
@@ -193,6 +220,16 @@ export const runtimeConfig: RuntimeConfig = {
       fromWindow().billingProxyEnabled ||
       import.meta.env.VITE_BILLING_PROXY_ENABLED,
   ),
+  cloudProxyEnabled: readBoolean(
+    fromWindow().CLOUD_PROXY_ENABLED ||
+      fromWindow().cloudProxyEnabled ||
+      import.meta.env.VITE_CLOUD_PROXY_ENABLED
+  ),
+  moesifAppUrl:
+    fromWindow().MOESIF_APP_URL ||
+    fromWindow().moesifAppUrl ||
+    import.meta.env.VITE_MOESIF_APP_URL ||
+    '',
   platformApiBaseUrl: resolvedPlatformApiBaseUrl,
   platformApiVersion:
     fromWindow().PLATFORM_API_VERSION ||
@@ -205,7 +242,9 @@ export const runtimeConfig: RuntimeConfig = {
     hostFromUrl(resolvedPlatformApiBaseUrl) ||
     'localhost:9243',
   policyHubBaseUrl:
-    fromWindow().POLICY_HUB_BASE_URL || import.meta.env.VITE_POLICY_HUB_BASE_URL || '',
+    fromWindow().POLICY_HUB_BASE_URL ||
+    import.meta.env.VITE_POLICY_HUB_BASE_URL ||
+    (import.meta.env.DEV && import.meta.env.MODE === 'development' ? DEV_POLICY_HUB_BASE_URL : ''),
   policyHubWebUrl:
     fromWindow().POLICY_HUB_WEB_URL ||
     import.meta.env.VITE_POLICY_HUB_WEB_URL ||
@@ -214,6 +253,14 @@ export const runtimeConfig: RuntimeConfig = {
     fromWindow().MOESIF_WEB_URL ||
     import.meta.env.VITE_MOESIF_WEB_URL ||
     'https://www.moesif.com/wrap/basic',
+  apiDesignerVsCodeUrl:
+    fromWindow().API_DESIGNER_VSCODE_URL ||
+    import.meta.env.VITE_API_DESIGNER_VSCODE_URL ||
+    'https://marketplace.visualstudio.com/items?itemName=WSO2.api-designer',
+  apiDesignerDocsUrl:
+    fromWindow().API_DESIGNER_DOCS_URL ||
+    import.meta.env.VITE_API_DESIGNER_DOCS_URL ||
+    'https://wso2.com/api-platform/docs/tools/vscode-api-design/getting-started/',
   privacyPolicyLink:
     fromWindow().PRIVACY_POLICY_LINK ||
     fromWindow().privacyPolicyLink ||

@@ -25,9 +25,11 @@ import {
   Stack,
   TablePagination,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@wso2/oxygen-ui';
-import { Plus, Search } from '@wso2/oxygen-ui-icons-react';
+import { LayoutGrid, List, Plus, Search } from '@wso2/oxygen-ui-icons-react';
 import { useEffect, useState } from 'react';
 import { defineMessages, FormattedMessage, useIntl, type MessageDescriptor } from 'react-intl';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -35,6 +37,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Project } from '@/api/resources/projects';
 import { useDeleteProject, useProjects, type ProjectListFilters } from '@/api/resources/projects';
 import { ProjectsGrid } from './ProjectsGrid';
+import { ProjectsList } from './ProjectsList';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { useNotifications } from '@/components/Notifications';
 import { EmptyState, ErrorState, LoadingState } from '@/components/StateViews';
@@ -46,6 +49,8 @@ import { ProjectFolderIllustration } from '@/components/illustrations/ProjectFol
 
 const PAGE_SIZE_OPTIONS = [12, 24, 48];
 const SEARCH_DEBOUNCE_MS = 300;
+
+type ViewMode = 'grid' | 'list';
 
 /**
  * Server-side sort is limited to `name | createdAt` and `asc | desc`.
@@ -100,6 +105,16 @@ const messages = defineMessages({
   errorMessage: {
     id: 'project.list.error.message',
     defaultMessage: 'Unable to load projects. {reason}',
+  },
+  gridView: {
+    id: 'apiControlPlane.pages.appShell.appShellPages.projects.ProjectListPage.gridView',
+    defaultMessage: 'Grid view',
+    description: 'Accessible label for the button switching to the card grid.',
+  },
+  listView: {
+    id: 'apiControlPlane.pages.appShell.appShellPages.projects.ProjectListPage.listView',
+    defaultMessage: 'List view',
+    description: 'Accessible label for the button switching to the table rows.',
   },
   loading: {
     id: 'project.list.loading',
@@ -200,6 +215,7 @@ export function ProjectListPage() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(PAGE_SIZE_OPTIONS[0]);
   const [sort, setSort] = useState<SortOption>(SORT_OPTIONS[0]);
+  const [view, setView] = useState<ViewMode>('grid');
   const [createOpen, setCreateOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Project | null>(null);
 
@@ -335,23 +351,40 @@ export function ProjectListPage() {
             <Typography variant="h6">
               <FormattedMessage {...messages.projectCount} values={{ count: total }} />
             </Typography>
-            <TextField
-              label={intl.formatMessage(messages.sortLabel)}
-              onChange={(event) => {
-                const next = SORT_OPTIONS.find((option) => option.value === event.target.value);
-                if (next) setSort(next);
-              }}
-              select
-              size="small"
-              sx={{ minWidth: 200 }}
-              value={sort.value}
-            >
-              {SORT_OPTIONS.map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {intl.formatMessage(option.label)}
-                </MenuItem>
-              ))}
-            </TextField>
+            <Stack alignItems="center" direction="row" spacing={1.5}>
+              <TextField
+                label={intl.formatMessage(messages.sortLabel)}
+                onChange={(event) => {
+                  const next = SORT_OPTIONS.find((option) => option.value === event.target.value);
+                  if (next) setSort(next);
+                }}
+                select
+                size="small"
+                sx={{ minWidth: 200 }}
+                value={sort.value}
+              >
+                {SORT_OPTIONS.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {intl.formatMessage(option.label)}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <ToggleButtonGroup
+                exclusive
+                onChange={(_event, value: ViewMode | null) => {
+                  if (value) setView(value);
+                }}
+                size="small"
+                value={view}
+              >
+                <ToggleButton aria-label={intl.formatMessage(messages.gridView)} value="grid">
+                  <LayoutGrid size={16} />
+                </ToggleButton>
+                <ToggleButton aria-label={intl.formatMessage(messages.listView)} value="list">
+                  <List size={16} />
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Stack>
           </Box>
           {projects.length === 0 ? (
             <EmptyState
@@ -360,10 +393,6 @@ export function ProjectListPage() {
             />
           ) : (
             <>
-              {/* Takes the column's leftover height, which is what keeps the
-                  pagination bar at the bottom on a half-empty page. Dimmed
-                  rather than unmounted while the next page is in flight, so the
-                  grid keeps its height and the page does not jump. */}
               <Box
                 sx={{
                   flexGrow: 1,
@@ -371,12 +400,11 @@ export function ProjectListPage() {
                   transition: 'opacity .15s ease',
                 }}
               >
-                <ProjectsGrid
-                  onDelete={setToDelete}
-                  onOpen={openProject}
-                  orgHandle={orgHandle}
-                  projects={projects}
-                />
+                {view === 'grid' ? (
+                  <ProjectsGrid onDelete={setToDelete} onOpen={openProject} projects={projects} />
+                ) : (
+                  <ProjectsList onDelete={setToDelete} onOpen={openProject} projects={projects} />
+                )}
               </Box>
               {total > PAGE_SIZE_OPTIONS[0] && (
                 <Box>

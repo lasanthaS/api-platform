@@ -17,7 +17,7 @@
  */
 
 import { lazy, type ReactNode } from 'react';
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
 import { AuthCallbackPage } from '@/pages/auth/AuthCallbackPage';
 import { LoginPage } from '@/pages/auth/LoginPage';
@@ -33,11 +33,14 @@ import AppLayout from '@/pages/appShell/AppLayout';
 import {
   extensionScopedPaths,
   isSidebarExtension,
+  PAGE_API_DEPLOY_SLOT,
+  PAGE_GATEWAYS_SLOT,
   settingsTabExtensions,
   type ApiControlPlaneExtension,
 } from '@/extensions';
 import type { NavigationLevel } from '@/navigation/navigationTypes';
 import { usePort } from '@/hostPort';
+import { Hideable, useSlot } from '@/slots';
 import { ProtectedRoute } from './ProtectedRoute';
 import { apiScopedPaths, projectScopedPaths, routes } from './paths';
 
@@ -82,11 +85,15 @@ const ApiCreatePage = lazy(() =>
   import('../pages/appShell/appShellPages/apis/create/ApiCreationWizard').then((m) => ({
     default: m.ApiCreationWizard,
   })),
-
 );
 const ApiDetailPage = lazy(() =>
   import('../pages/appShell/appShellPages/apis/overview').then((m) => ({
     default: m.ApiDetailPage,
+  })),
+);
+const ApiEditPage = lazy(() =>
+  import('../pages/appShell/appShellPages/apis/edit').then((m) => ({
+    default: m.ApiEditPage,
   })),
 );
 const DeployPage = lazy(() =>
@@ -102,14 +109,15 @@ const PoliciesPage = lazy(() =>
     default: m.PoliciesPage,
   })),
 );
-const RoutingPage = lazy(() =>
-  import('../pages/appShell/appShellPages/develop/routings/RoutingPage').then((m) => ({
-    default: m.RoutingPage,
-  })),
-);
+
 const DocumentsPage = lazy(() =>
   import('../pages/appShell/appShellPages/develop/documents/DocumentsPage').then((m) => ({
     default: m.DocumentsPage,
+  })),
+);
+const DefinitionPage = lazy(() =>
+  import('../pages/appShell/appShellPages/develop/definition/DefinitionPage').then((m) => ({
+    default: m.DefinitionPage,
   })),
 );
 const ApiConsolePage = lazy(() =>
@@ -162,6 +170,16 @@ const RuntimeLogsPage = lazy(() =>
     default: m.RuntimeLogsPage,
   })),
 );
+const PortalsPage = lazy(() =>
+  import('../pages/appShell/appShellPages/portals/PortalsPage').then((m) => ({
+    default: m.PortalsPage,
+  })),
+);
+const PortalPublishPage = lazy(() =>
+  import('../pages/appShell/appShellPages/portals/PortalPublishPage').then((m) => ({
+    default: m.PortalPublishPage,
+  })),
+);
 const SettingsLayout = lazy(() =>
   import('../pages/appShell/appShellPages/settings/SettingsLayout').then((m) => ({
     default: m.SettingsLayout,
@@ -196,6 +214,69 @@ const scopedRoutes = (paths: string[], element: ReactNode) =>
 function ExtensionRoute({ extension }: { extension: ApiControlPlaneExtension }) {
   const port = usePort();
   return <>{extension.render(port)}</>;
+}
+
+/**
+ * The gateways route subtree. Renders a cloud override registered against
+ * `PAGE_GATEWAYS_SLOT` when one is present, otherwise the built-in gateways
+ * pages — the same Slot-adds / Hideable-suppresses split the ai-workspace host
+ * uses, so the cloud build swaps in the managed-gateways plugin while the public
+ * build keeps its native pages. Mounted at `gateways/*` so either branch owns
+ * the nested `create`/`new`/`:gatewayId` routes.
+ */
+function GatewaysRoute() {
+  const port = usePort();
+  const [override] = useSlot<ApiControlPlaneExtension>(PAGE_GATEWAYS_SLOT);
+  // This route's own `gateways` path, derived by stripping the matched splat
+  // off the current URL. Deliberately not `useResolvedPath('')`: from a splat
+  // route react-router 7 resolves relative to the *full* matched pathname, so
+  // that would hand back the current URL and redirect it to itself. Stripping
+  // the splat also keeps the scope-less `select-scope` aliases working, which
+  // rebuilding the path from `routes.gateways()` would not.
+  const { pathname } = useLocation();
+  const splat = useParams()['*'] ?? '';
+  const indexPath = splat
+    ? pathname.slice(0, pathname.length - splat.length).replace(/\/+$/, '')
+    : pathname;
+  if (override) {
+    // An override replaces the whole subtree with one self-contained flow that
+    // keeps its view in local state (a feature package holds no router of its
+    // own, so it cannot own nested routes). There is therefore no `new` or
+    // `:gatewayId` URL under it: send those to the index instead of rendering
+    // the list at a URL claiming to be a create or detail page.
+    return (
+      <Routes>
+        <Route index element={<>{override.render(port)}</>} />
+        <Route element={<Navigate replace to={indexPath} />} path="*" />
+      </Routes>
+    );
+  }
+  return (
+    <Hideable name={PAGE_GATEWAYS_SLOT}>
+      <Routes>
+        <Route index element={<GatewaysPage />} />
+        <Route path="new" element={<GatewayCreatePage />} />
+        <Route path=":gatewayId" element={<GatewayDetailPage />} />
+      </Routes>
+    </Hideable>
+  );
+}
+
+/**
+ * The API's Deploy page. Renders a cloud override registered against
+ * `PAGE_API_DEPLOY_SLOT` when one is present, otherwise the built-in page.
+ * Unlike gateways this is a single route rather than a subtree, so there are no
+ * nested paths to redirect.
+ */
+function ApiDeployRoute() {
+  const port = usePort();
+  const [override] = useSlot<ApiControlPlaneExtension>(PAGE_API_DEPLOY_SLOT);
+  if (override) return <>{override.render(port)}</>;
+  return (
+    <Hideable name={PAGE_API_DEPLOY_SLOT}>
+      <DeployPage />
+    </Hideable>
+  );
 }
 
 export function AppRoutes({ extensions = [] }: AppRoutesProps) {
@@ -245,9 +326,7 @@ export function AppRoutes({ extensions = [] }: AppRoutesProps) {
           <Route path={routes.organizations} element={<OrganizationRedirectPage />} />
           <Route path={routes.organizationHome()} element={<OrganizationHomePage />} />
           <Route path={routes.projects()} element={<ProjectListPage />} />
-          <Route path={routes.gateways()} element={<GatewaysPage />} />
-          <Route path={routes.newGateway()} element={<GatewayCreatePage />} />
-          <Route path={routes.gateway()} element={<GatewayDetailPage />} />
+          <Route path={`${routes.gateways()}/*`} element={<GatewaysRoute />} />
           {/*
             Project and API overview take a single fully-scoped path each: they
             are the deeper tiers of the sidebar's Overview item, which degrades
@@ -259,23 +338,38 @@ export function AppRoutes({ extensions = [] }: AppRoutesProps) {
           {scopedRoutes(projectScopedPaths(routes.apis), <ApiListPage />)}
           <Route path={routes.newApi()} element={<ApiCreatePage />} />
           {/*
+            Editing basic information is reached from the detail page's own edit
+            button, so — like the create page — it takes the fully-scoped path
+            alone.
+          */}
+          <Route path={routes.apiEdit()} element={<ApiEditPage />} />
+          {/*
             Test, Observability and Manage are sidebar parents with no page of
             their own — only their children are routed. Out of API scope a parent
             links to its first child's alias, so `.../test` and friends are never
             produced and are not registered.
           */}
           {scopedRoutes(apiScopedPaths(routes.apiDevelopPolicies), <PoliciesPage />)}
-          {scopedRoutes(apiScopedPaths(routes.apiDevelopRouting), <RoutingPage />)}
+
           {scopedRoutes(apiScopedPaths(routes.apiDevelopDocuments), <DocumentsPage />)}
+          {scopedRoutes(apiScopedPaths(routes.apiDevelopDefinition), <DefinitionPage />)}
           {scopedRoutes(apiScopedPaths(routes.apiTestConsole), <ApiConsolePage />)}
           {scopedRoutes(apiScopedPaths(routes.apiTestCurl), <TestPage />)}
           {scopedRoutes(apiScopedPaths(routes.apiTestChat), <ApiChatPage />)}
-          {scopedRoutes(apiScopedPaths(routes.apiDeploy), <DeployPage />)}
+          {scopedRoutes(apiScopedPaths(routes.apiDeploy), <ApiDeployRoute />)}
           {scopedRoutes(apiScopedPaths(routes.apiInsightsApi), <InsightsPage />)}
           {scopedRoutes(apiScopedPaths(routes.apiInsightsCompliance), <CompliancePage />)}
           {scopedRoutes(apiScopedPaths(routes.apiObservabilityAlerts), <AlertsPage />)}
           {scopedRoutes(apiScopedPaths(routes.apiObservabilityMetrics), <MetricsPage />)}
           {scopedRoutes(apiScopedPaths(routes.apiObservabilityLogs), <RuntimeLogsPage />)}
+          <Route path={routes.organizationPortals()} element={<PortalsPage />} />
+          <Route path={routes.projectPortals()} element={<PortalsPage />} />
+          <Route path={routes.apiPortals()} element={<PortalsPage />} />
+          {/*
+            Reached only from a portal card on the page above — like `apiEdit`,
+            there is no sidebar link to it and so no scope-less alias to register.
+          */}
+          <Route path={routes.apiPortalPublish()} element={<PortalPublishPage />} />
           {scopedRoutes(apiScopedPaths(routes.apiManageMonetize), <MonetizePage />)}
           {scopedRoutes(apiScopedPaths(routes.apiManageLifecycle), <LifeCyclePage />)}
           {scopedRoutes(apiScopedPaths(routes.apiAdmin), <AdminPage />)}

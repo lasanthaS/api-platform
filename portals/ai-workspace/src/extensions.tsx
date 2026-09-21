@@ -58,14 +58,68 @@ export type AIWorkspaceExtension = SlotEntry & {
 export const AI_WORKSPACE_GATEWAYS_SLOT = 'page.gateways';
 
 /**
+ * Slot for overriding the built-in Insights page (org + project `/insights`)
+ * with the shared cloud Moesif embed. Same Slot/Hideable split as gateways —
+ * the built-in sidebar item and routes stay; only the page body changes.
+ */
+export const AI_WORKSPACE_INSIGHTS_SLOT = 'page.insights';
+
+/**
  * A host-injected replacement for a specific built-in page. Unlike
  * `AIWorkspaceExtension`, this isn't a new sidebar item — the built-in
  * page's own route and sidebar entry stay in place; only what renders at
  * that route changes.
  */
 export type AIWorkspacePageOverride = SlotEntry & {
-  render: (port: AIWorkspaceHostPort) => ReactNode;
+  /**
+   * `artifactHandle` is given only for pages scoped to a single artifact — the
+   * per-kind Deploy pages. The route carries it (`:serverId`, `:proxyId`,
+   * `:providerId`) and the cloud plugins have no router of their own, so the portal
+   * reads it off the URL and hands it over. It is absent for every other override.
+   */
+  render: (port: AIWorkspaceHostPort, artifactHandle?: string) => ReactNode;
+  /**
+   * Optional nav placement for the built-in item this override replaces. When
+   * `label` is given the sidebar renders the override alongside the sidebar
+   * extensions, ordered by `order` — so a cloud build can move the entry into
+   * the extension cluster instead of leaving it where the built-in sits. Pair
+   * it with `hides` naming the built-in item's own region, or both appear.
+   */
+  label?: string;
+  icon?: ReactNode;
+  path?: string;
+  /** Built-in `Hideable` regions this entry suppresses (see `slots/index.tsx`). */
+  hides?: readonly string[];
 };
+
+/**
+ * Slots for overriding the built-in per-artifact Deploy pages — an MCP server's, an
+ * LLM proxy's and an LLM provider's. Same Slot/Hideable split as the pages above:
+ * each built-in route and sidebar entry stays, only the body changes.
+ *
+ * There is one per kind rather than a single shared slot because the pages sit on
+ * different routes and deploy different kinds of artifact, and a replacement has to
+ * be registered for the kind it understands. A provider is a case in point: it
+ * belongs to the organization rather than to a project, so a replacement for it has
+ * a different notion of where a deployment goes than the other two do.
+ */
+export const AI_WORKSPACE_MCP_DEPLOY_SLOT = 'page.mcpDeploy';
+export const AI_WORKSPACE_LLM_PROXY_DEPLOY_SLOT = 'page.llmProxyDeploy';
+export const AI_WORKSPACE_LLM_PROVIDER_DEPLOY_SLOT = 'page.llmProviderDeploy';
+
+/**
+ * `Hideable` region wrapping the built-in AI Gateways *sidebar item* (the page
+ * itself is `AI_WORKSPACE_GATEWAYS_SLOT`). Separate name because a cloud build
+ * may want to reposition the nav entry while still rendering at the built-in
+ * route.
+ */
+export const AI_WORKSPACE_GATEWAYS_NAV_REGION = 'nav.gateways';
+
+/** Every `Hideable` region the registered entries suppress. */
+export const hiddenRegionsOf = (
+  entries: readonly AIWorkspaceCloudEntry[]
+): readonly string[] =>
+  entries.flatMap((entry) => ('hides' in entry ? (entry.hides ?? []) : []));
 
 /** Every registered cloud entry — sidebar items and page overrides share one slot registry (see `slots/index.tsx`), filtered by `slot` at each consumption site. */
 export type AIWorkspaceCloudEntry = AIWorkspaceExtension | AIWorkspacePageOverride;

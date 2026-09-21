@@ -16,29 +16,45 @@
  * under the License.
  */
 
-import { Box, Stack, Typography } from '@wso2/oxygen-ui';
-import { useCallback, useState } from 'react';
+import { Alert, Box, Button, LinearProgress, Stack, Typography } from '@wso2/oxygen-ui';
+import { ArrowRight } from '@wso2/oxygen-ui-icons-react';
+import { useCallback, useEffect, useState } from 'react';
 import { defineMessages, useIntl } from 'react-intl';
 import { useNavigate } from 'react-router-dom';
 import { DefineApiPanel } from './components/DefineApiPanel';
 import { GeneralCreateApiForm } from './components/GeneralCreateApiForm';
 import { ApiCreationWizardDraftState, ApiType, GeneralApiCreationFormState } from './types';
 import { ApiTypeSelector } from './components/ApiTypeSelector';
-import { ApiCreationStepKey, ApiCreationSteps } from './components/ApiCreationSteps';
-import { useCreateRestApi } from '@/api/resources/restApis';
+import type { ApiCreationStepKey } from './components/ApiCreationSteps';
+import { useImportOpenApi, useValidateOpenApiSpec } from '@/api/resources/restApis';
 import { useConsoleScope } from '@/scope/ConsoleScopeProvider';
 import { routes } from '@/routes/paths';
-import { toCreateRestApiBody } from './utils/createRestApiBody';
 import {
   ApiCreationProgress,
   type ApiCreationProgressStatus,
 } from './components/ApiCreationProgress';
+import { API_TYPES } from './uiConfig';
+import { ApiDesignerBanner } from './components/ApiDesignerBanner';
+
+const CONFIGURE_FORM_ID = 'api-creation-configure-form';
 
 const messages = defineMessages({
+  back: {
+    id: 'api.create.ApiCreationWizard.action.back',
+    defaultMessage: 'Back',
+  },
+  continue: {
+    id: 'api.create.ApiCreationWizard.action.continue',
+    defaultMessage: 'Continue',
+  },
+  specInvalidOnCreate: {
+    id: 'api.create.ApiCreationWizard.specInvalidOnCreate',
+    defaultMessage: 'Fix the following spec issues before creating:',
+    description: 'Heading above spec validation errors shown when the Create button is clicked.',
+  },
   apiTypeSubtitle: {
     id: 'api.create.ApiCreationWizard.apiType.subtitle',
-    defaultMessage:
-      'This decides how the gateway exposes your backend. Only REST is available today.',
+    defaultMessage: 'Choose how the gateway should expose your backend.',
   },
   apiTypeTitle: {
     id: 'api.create.ApiCreationWizard.apiType.title',
@@ -46,7 +62,7 @@ const messages = defineMessages({
   },
   configureSubtitle: {
     id: 'api.create.ApiCreationWizard.configure.subtitle',
-    defaultMessage: 'Name it, set where it routes, and create it.',
+    defaultMessage: 'Review the API details, configure its backend endpoint, and create it.',
   },
   configureTitle: {
     id: 'api.create.ApiCreationWizard.configure.title',
@@ -69,12 +85,27 @@ const messages = defineMessages({
     description:
       '{apiType} is the type picked in the first step, e.g. "REST API". Reads as one sentence.',
   },
+  stepCount: {
+    id: 'api.create.ApiCreationWizard.stepCount',
+    defaultMessage: 'Step {current} of 3',
+  },
 });
 
 export const ApiCreationWizard = () => {
   const intl = useIntl();
   const [step, setStep] = useState<ApiCreationStepKey>('apiType');
-  const [apiType, setApiType] = useState<ApiType | null>(null);
+  const [apiType, setApiType] = useState<ApiType | null>(
+    () => API_TYPES.find((candidate) => candidate.enabled) ?? null,
+  );
+  const [sourceDraft, setSourceDraft] = useState<ApiCreationWizardDraftState | null>(null);
+  const [specValidating, setSpecValidating] = useState(false);
+  const [specValidationErrors, setSpecValidationErrors] = useState<string[] | null>(null);
+  const validateSpec = useValidateOpenApiSpec();
+
+  // Clear spec validation errors when the source draft changes (user re-uploads or picks a new source).
+  useEffect(() => {
+    setSpecValidationErrors(null);
+  }, [sourceDraft]);
 
   const [prefilledData, setPrefilledData] = useState<Partial<GeneralApiCreationFormState>>({});
 
@@ -121,15 +152,15 @@ export const ApiCreationWizard = () => {
    * A fresh import also supersedes any earlier submission, so the form starts
    * from the new document rather than restoring values typed against the old.
    */
-  const handleDataExtracted = (data: ApiCreationWizardDraftState) => {
-    setPrefilledData(data);
+  const continueFromSource = () => {
+    if (sourceDraft === null) return;
+    setPrefilledData(sourceDraft);
     setSubmittedValues(null);
-
     setStep('configure');
   };
 
   const navigate = useNavigate();
-  const createRestApiMutation = useCreateRestApi();
+  const importOpenApiMutation = useImportOpenApi();
   // `projectId` on the request body is the project handle from the route, not
   // something the form collects.
   const { activeScope, params } = useConsoleScope();
@@ -146,21 +177,64 @@ export const ApiCreationWizard = () => {
 
   const createApi = (values: GeneralApiCreationFormState) => {
     const projectId = activeScope.projectHandler;
-    if (!projectId) {
-      // Nothing to create against — the wizard is mounted outside a project.
+    if (!projectId || !values.contractImport?.specFile) {
+      // Nothing to create against — the wizard is mounted outside a project,
+      // or the spec was never produced (contract source with no loaded spec).
+      setCreationStarted(false);
       return;
     }
 
-    createRestApiMutation.mutate(toCreateRestApiBody(values, { projectId }));
+    // Both "from contract" and "design from scratch" carry a spec file in the
+    // draft: contract passes the imported spec, scratch passes the skeleton
+    // (or whatever the user edited). Both submit via import-openapi.
+    const formData = new FormData();
+    formData.append('file', values.contractImport.specFile, 'openapi.json');
+    formData.append('id', values.id.trim());
+    formData.append('displayName', values.displayName.trim());
+    formData.append('version', values.version.trim());
+    // Normalize context to always have a leading slash.
+    const context = `/${values.context.trim().replace(/^\/+/, '')}`;
+    formData.append('context', context);
+    formData.append('projectId', projectId);
+    if (values.description?.trim()) {
+      formData.append('description', values.description.trim());
+    }
+    const mainUrl = values.upstream?.main?.url?.trim();
+    if (mainUrl) {
+      formData.append('upstream', JSON.stringify({ main: { url: mainUrl } }));
+    }
+    importOpenApiMutation.mutate(formData);
   };
 
-  const onGeneralFormSumit = (finalData: GeneralApiCreationFormState) => {
+  const onGeneralFormSumit = async (finalData: GeneralApiCreationFormState) => {
     if (!activeScope.projectHandler) return;
+    if (step !== 'configure') return;
+
+    // Validate the spec before creating when a spec file was uploaded.
+    const specFile = finalData.contractImport?.specFile;
+    if (specFile) {
+      setSpecValidating(true);
+      setSpecValidationErrors(null);
+      try {
+        const text = await specFile.text();
+        const validation = await validateSpec.mutateAsync(text);
+        if (!validation.isValid) {
+          setSpecValidationErrors(validation.errors.map((e) => e.message));
+          setSpecValidating(false);
+          return;
+        }
+      } catch {
+        // Network/auth error — don't block the create; let the backend respond.
+      }
+      setSpecValidating(false);
+    }
 
     setSubmittedValues(finalData);
     setCreationStarted(true);
     createApi(finalData);
   };
+
+  const activeMutation = importOpenApiMutation;
 
   /**
    * Redirect to the created API's overview page.
@@ -170,7 +244,7 @@ export const ApiCreationWizard = () => {
     const { orgHandle, projectHandler } = params;
     if (!orgHandle || !projectHandler) return;
 
-    const createdId = createRestApiMutation.data?.id;
+    const createdId = activeMutation.data?.id;
     navigate(
       createdId
         ? routes.api(orgHandle, projectHandler, createdId)
@@ -178,11 +252,11 @@ export const ApiCreationWizard = () => {
           routes.apis(orgHandle, projectHandler),
       { replace: true },
     );
-  }, [createRestApiMutation.data?.id, navigate, params]);
+  }, [activeMutation.data?.id, navigate, params]);
 
-  const creationStatus: ApiCreationProgressStatus = createRestApiMutation.isError
+  const creationStatus: ApiCreationProgressStatus = activeMutation.isError
     ? 'failed'
-    : createRestApiMutation.isSuccess
+    : activeMutation.isSuccess
       ? 'created'
       : 'creating';
 
@@ -191,7 +265,7 @@ export const ApiCreationWizard = () => {
       <ApiCreationProgress
         displayName={submittedValues.displayName}
         onBack={() => {
-          createRestApiMutation.reset();
+          importOpenApiMutation.reset();
           // Only the screen goes back; `submittedValues` stays so the form
           // returns to what was typed rather than to the imported draft.
           setCreationStarted(false);
@@ -203,57 +277,162 @@ export const ApiCreationWizard = () => {
     );
   }
 
+  const stepNumber = step === 'apiType' ? 1 : step === 'source' ? 2 : 3;
+
   return (
-    <Box sx={{ width: '100%' }}>
-      <Stack direction="column" spacing={2} sx={{ alignItems: 'center' }}>
-        <ApiCreationSteps activeStep={step} onStepClick={(step) => setStep(step)} />
+    <Stack spacing={2} sx={{ width: '100%' }}>
+      <Box
+        sx={{
+          border: 1,
+          borderColor: 'divider',
+          borderRadius: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 620,
+          overflow: 'hidden',
+          width: '100%',
+        }}
+      >
+        <LinearProgress
+          aria-label={intl.formatMessage(messages.stepCount, { current: stepNumber })}
+          sx={{
+            bgcolor: 'divider',
+            height: 3,
+            '& .MuiLinearProgress-bar': { bgcolor: 'primary.main' },
+          }}
+          value={(stepNumber / 3) * 100}
+          variant="determinate"
+        />
 
-        <Box sx={{ alignSelf: 'flex-start' }}>
-          <Typography variant="h1" sx={{ textAlign: 'left', mb: 1, fontWeight: 700 }}>
-            {getTitleForStep(step)}
-          </Typography>
-          <Typography variant="body1" sx={{ textAlign: 'left' }}>
-            {getSubtitleForStep(step)}
-          </Typography>
-        </Box>
-
-        <Box sx={{ alignSelf: 'flex-start', width: '100%' }}>
-          {step === 'apiType' && (
-            <ApiTypeSelector
-              onChange={(apiType) => {
-                setApiType(apiType);
-                setStep('source');
-              }}
-            />
-          )}
-
-          {step === 'source' && (
-            // `onAuthorizeGitHub` and `onRefreshSwaggerHubOrganizations` are
-            // deliberately not passed: neither flow is wired yet, and the
-            // panel hides the control belonging to a handler it wasn't given
-            // rather than rendering a button that does nothing.
-            <DefineApiPanel
-              initialApiTypeKey={apiType?.key}
-              onDataFetched={handleDataExtracted}
-              onBack={() => setStep('apiType')}
-            />
-          )}
-
-          {step === 'configure' && (
-            <Box sx={{ maxWidth: '80%', mt: 1 }}>
-              <GeneralCreateApiForm
-                // What the user actually submitted, when there is such an
-                // attempt to come back from: the form remounts after the
-                // progress screen, so anything hand-typed would otherwise
-                // revert to the spec-derived draft.
-                initialValues={submittedValues ?? prefilledData}
-                onSubmit={onGeneralFormSumit}
-                onBack={() => setStep('source')}
-              />
+        <Box sx={{ flex: 1, p: { md: 3.5, xs: 2 } }}>
+          <Stack
+            direction="column"
+            spacing={step === 'configure' ? 2 : 3}
+            sx={{ alignItems: 'flex-start' }}
+          >
+            <Box>
+              <Typography variant="h1" sx={{ textAlign: 'left', fontWeight: 700 }}>
+                {getTitleForStep(step)}
+              </Typography>
+              <Typography variant="body1" sx={{ opacity: 0.65, textAlign: 'left' }}>
+                {getSubtitleForStep(step)}
+              </Typography>
             </Box>
-          )}
+
+            <Box sx={{ width: '100%' }}>
+              {step === 'apiType' && (
+                <ApiTypeSelector
+                  onChange={(apiType) => {
+                    setApiType(apiType);
+                  }}
+                  value={apiType?.key}
+                />
+              )}
+
+              {step !== 'apiType' && (
+                <Box sx={{ display: step === 'source' ? 'block' : 'none' }}>
+                  {/* Kept mounted during configuration so Back preserves the selected source and edits. */}
+                  <DefineApiPanel initialApiTypeKey={apiType?.key} onDraftChange={setSourceDraft} />
+                </Box>
+              )}
+
+              {step === 'configure' && (
+                <Box sx={{ maxWidth: '80%' }}>
+                  <GeneralCreateApiForm
+                    formId={CONFIGURE_FORM_ID}
+                    hideActions
+                    // What the user actually submitted, when there is such an
+                    // attempt to come back from: the form remounts after the
+                    // progress screen, so anything hand-typed would otherwise
+                    // revert to the spec-derived draft.
+                    initialValues={submittedValues ?? prefilledData}
+                    onSubmit={onGeneralFormSumit}
+                    onBack={() => setStep('source')}
+                  />
+                </Box>
+              )}
+            </Box>
+          </Stack>
         </Box>
-      </Stack>
-    </Box>
+
+        <Stack
+          sx={{
+            borderTop: 1,
+            borderColor: 'divider',
+          }}
+        >
+          {step === 'configure' &&
+            specValidationErrors !== null &&
+            specValidationErrors.length > 0 && (
+              <Alert
+                severity="error"
+                sx={{ borderRadius: 0, borderBottom: 1, borderColor: 'divider' }}
+              >
+                {intl.formatMessage(messages.specInvalidOnCreate)}
+                <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+                  {specValidationErrors.map((msg, i) => (
+                    <Typography component="li" key={i} variant="body2">
+                      {msg}
+                    </Typography>
+                  ))}
+                </Box>
+              </Alert>
+            )}
+          <Stack
+            direction="row"
+            sx={{
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              minHeight: 56,
+              px: 3,
+            }}
+          >
+            <Typography color="text.secondary" sx={{ fontWeight: 600 }} variant="caption">
+              {intl.formatMessage(messages.stepCount, { current: stepNumber })}
+            </Typography>
+            <Stack direction="row" spacing={1}>
+              <Button
+                disabled={step === 'apiType' || specValidating}
+                onClick={() => setStep(step === 'configure' ? 'source' : 'apiType')}
+                type="button"
+                variant="text"
+              >
+                {intl.formatMessage(messages.back)}
+              </Button>
+              {step === 'configure' ? (
+                <Button
+                  disabled={specValidating}
+                  form={CONFIGURE_FORM_ID}
+                  key="create-api"
+                  loading={specValidating}
+                  type="submit"
+                  variant="contained"
+                >
+                  {intl.formatMessage({
+                    id: 'api.create.generalForm.action.create',
+                    defaultMessage: 'Create',
+                  })}
+                </Button>
+              ) : (
+                <Button
+                  disabled={step === 'apiType' ? !apiType : sourceDraft === null}
+                  endIcon={<ArrowRight size={16} />}
+                  key="continue-wizard"
+                  onClick={() => {
+                    if (step === 'apiType') setStep('source');
+                    else continueFromSource();
+                  }}
+                  type="button"
+                  variant="contained"
+                >
+                  {intl.formatMessage(messages.continue)}
+                </Button>
+              )}
+            </Stack>
+          </Stack>
+        </Stack>
+      </Box>
+      {step === 'apiType' && <ApiDesignerBanner />}
+    </Stack>
   );
 };

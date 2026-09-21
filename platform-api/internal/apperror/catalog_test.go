@@ -44,10 +44,15 @@ var messageArity = map[string]int{
 	CodeOf(LLMProxyDeploymentValidationFailed):    1,
 	CodeOf(MCPProxyDeploymentValidationFailed):    1,
 	CodeOf(DeploymentNotActive):                   1,
+	CodeOf(BuildLimitReached):                     1,
 	CodeOf(ArtifactReadOnly):                      1,
 	CodeOf(ArtifactRuntimeImmutable):              1,
 	CodeOf(ArtifactDeployed):                      1,
 	CodeOf(TooManyRequests):                       1,
+	CodeOf(APIPublicationValidationFailed):        1,
+	CodeOf(APIPublicationPortalConflict):          1,
+	CodeOf(APIPublicationStateConflict):           1,
+	CodeOf(PayloadTooLarge):                       1,
 }
 
 // CodeOf makes the arity table read as a set of catalog references rather

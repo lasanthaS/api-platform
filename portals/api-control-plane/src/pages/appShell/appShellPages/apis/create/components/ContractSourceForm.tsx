@@ -22,11 +22,12 @@ import {
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
-  Divider,
   Form,
   FormControl,
   FormHelperText,
+  FormLabel,
   Grid,
   IconButton,
   InputAdornment,
@@ -39,18 +40,36 @@ import {
   ToggleButtonGroup,
   Tooltip,
   Typography,
+  alpha,
+  type Theme,
 } from '@wso2/oxygen-ui';
-import { Download, GitHub, Pencil, RefreshCw, Upload, X } from '@wso2/oxygen-ui-icons-react';
+import {
+  Eraser as Broom,
+  FileText,
+  GitHub,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  Upload,
+  Zap,
+} from '@wso2/oxygen-ui-icons-react';
 import yaml from 'js-yaml';
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type DragEvent,
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { defineMessages, FormattedMessage, useIntl, type MessageDescriptor } from 'react-intl';
+import {
+  defineMessages,
+  FormattedMessage,
+  useIntl,
+  type IntlShape,
+  type MessageDescriptor,
+} from 'react-intl';
 
 import { hairline } from '@/theme/receipes';
 import { GitHubDirectoryDialog, type GitHubDirectorySelection } from './GitHubDirectoryDialog';
@@ -69,8 +88,9 @@ import {
   swaggerHubSpecUrl,
   type SwaggerHubApi,
 } from '../utils/swaggerHub';
+import { useValidateOpenApiSpec, type OpenAPIValidationError } from '@/api/resources/restApis';
 import { isValidUrl } from '../../utils/developEdit';
-import { validateApiSpec, type SpecDialect, type SpecIssue } from '../utils/specValidation';
+import { collectSpecWarnings, readDialectFromSpec, type SpecDialect, type SpecIssue } from '../utils/specValidation';
 import { SpecIssueList } from './SpecIssueList';
 import { type ApiType } from '../types';
 import { API_TYPES } from '../uiConfig';
@@ -116,7 +136,10 @@ export type ContractSourceFormProps = {
   definitionEdited?: boolean;
   /** Type selected on first render. Defaults to the first entry in `apiTypes`. */
   initialApiTypeKey?: string;
-  /** Starts the GitHub OAuth flow. The button renders either way, inert until wired. */
+  /**
+   * Starts the GitHub OAuth flow. Unused while the GitHub source is withheld
+   * from `CONTRACT_SOURCES_BY_API_TYPE`; kept for when it is offered again.
+   */
   onAuthorizeGitHub?: () => void;
   /**
    * The contract this form currently stands behind: what the last fetch
@@ -125,7 +148,10 @@ export type ContractSourceFormProps = {
    * proceed with.
    */
   onContractChange?: (contract: FetchedContract | null) => void;
-  /** Re-fetches the SwaggerHub organizations. Inert until the import is wired. */
+  /**
+   * Re-fetches the SwaggerHub organizations. Unused while the SwaggerHub
+   * source is withheld, on the same terms as `onAuthorizeGitHub`.
+   */
   onRefreshSwaggerHubOrganizations?: () => void;
 };
 
@@ -135,8 +161,12 @@ export type ContractSourceFormProps = {
  * type absent here is not offered by this step at all.
  */
 const CONTRACT_SOURCES_BY_API_TYPE: Record<string, ContractSourceKey[]> = {
-  rest: ['url', 'file', 'github', 'swaggerhub'],
-  websocket: ['url', 'file', 'github', 'swaggerhub'],
+  // `github` and `swaggerhub` are withheld from every type until their import
+  // flow is settled. Everything behind them; the lookups, the pickers, and
+  // their branches of `fetchContractForPreview`; is left in place, so
+  // offering one again is a matter of listing it here and do necessary changes.
+  rest: ['url', 'file'],
+  websocket: ['url', 'file'],
   graphql: ['url', 'file'],
 };
 
@@ -163,11 +193,16 @@ const SAMPLE_CONTRACT_URLS: Record<string, string> = {
 const SAMPLE_REPOSITORY_URL = 'https://github.com/wso2/bijira-samples';
 
 const messages = defineMessages({
-  fetch: {
-    id: 'api.create.fromContract.action.fetch',
-    defaultMessage: 'Fetch Contract',
+  clearUrl: {
+    id: 'api.create.fromContract.action.clearUrl',
+    defaultMessage: 'Clear URL',
+    description: 'Clears the API contract URL field and its loaded preview.',
+  },
+  fetching: {
+    id: 'api.create.fromContract.status.fetching',
+    defaultMessage: 'Reading the contract…',
     description:
-      'Reads the contract from the chosen source and previews its resources, without leaving the step.',
+      'Shown while the chosen contract is being read and checked, which starts on its own.',
   },
   gitHubAuthorize: {
     id: 'api.create.fromContract.gitHub.authorize',
@@ -349,7 +384,9 @@ const messages = defineMessages({
   },
   uploadAccepted: {
     id: 'api.create.fromContract.upload.accepted',
-    defaultMessage: 'Accepted file types: {extensions}',
+    defaultMessage: 'Accepted: {extensions} \u00b7 up to {maxSize}',
+    description:
+      'Neutral helper line under the drop zone. {maxSize} is a formatted size such as "10 MB".',
   },
   uploadAction: {
     id: 'api.create.fromContract.upload.action',
@@ -357,12 +394,19 @@ const messages = defineMessages({
   },
   uploadHint: {
     id: 'api.create.fromContract.upload.hint',
-    defaultMessage: 'Drag & Drop your files or click to select files',
+    defaultMessage:
+      'Drag & drop your file or click to select \u00b7 Accepted file types: {extensions}',
+    description: 'Sits under the drop-zone heading; {extensions} is a list such as ".json, .yaml".',
   },
   uploadRemove: {
     id: 'api.create.fromContract.upload.remove',
     defaultMessage: 'Remove {fileName}',
     description: 'Accessible name for the button that discards the chosen file.',
+  },
+  uploadedFile: {
+    id: 'api.create.fromContract.upload.uploadedFile',
+    defaultMessage: 'Uploaded file',
+    description: 'Heading above the selected API contract file.',
   },
   uploadRequired: {
     id: 'api.create.fromContract.upload.required',
@@ -391,6 +435,11 @@ const messages = defineMessages({
   urlRequired: {
     id: 'api.create.fromContract.url.required',
     defaultMessage: 'The URL for the API contract cannot be empty',
+  },
+  specInvalidByBackend: {
+    id: 'api.create.fromContract.spec.invalidByBackend',
+    defaultMessage: 'The specification is not a valid OpenAPI document:',
+    description: 'Heading above the list of backend validation errors.',
   },
 });
 
@@ -446,9 +495,7 @@ const useContractTextField = ({
   return {
     commit,
     error,
-    handleBlur: commit,
     handleChange: change,
-    isEmpty: value.trim() === '',
     setValue: change,
     value,
   };
@@ -466,6 +513,12 @@ type ContractTextControlProps = {
   invalidMessage?: MessageDescriptor;
   /** Plain string, not a node: it also sizes the notch it sits in. */
   label: string;
+  /**
+   * The field passed validation on blur, with the trimmed value it holds. This
+   * is where a source acts on a finished value; the URL source fetches from
+   * it; so nothing has to be triggered by hand.
+   */
+  onCommitted?: (value: string) => void;
   placeholder: string;
   requiredMessage: MessageDescriptor;
 };
@@ -479,6 +532,7 @@ const ContractTextControl = ({
   id,
   invalidMessage,
   label,
+  onCommitted,
   placeholder,
   requiredMessage,
 }: ContractTextControlProps) => {
@@ -501,11 +555,15 @@ const ContractTextControl = ({
         aria-describedby={helperId}
         endAdornment={endAdornment}
         id={id}
-        // Cuts the gap in the border the InputLabel floats into — must match
+        // Cuts the gap in the border the InputLabel floats into; must match
         // that label exactly or the notch is the wrong width.
         label={label}
         name={id}
-        onBlur={field.handleBlur}
+        onBlur={() => {
+          if (field.commit()) {
+            onCommitted?.(field.value.trim());
+          }
+        }}
         onChange={(event) => field.handleChange(event.target.value)}
         placeholder={placeholder}
         value={field.value}
@@ -522,6 +580,7 @@ const SampleLink = ({ onClick }: { onClick: () => void }) => (
   <Button
     onClick={onClick}
     size="small"
+    startIcon={<Zap size={16} />}
     sx={{ alignSelf: 'flex-start', px: 0, textTransform: 'none' }}
     type="button"
     variant="text"
@@ -545,12 +604,52 @@ type ContractFileControlProps = {
   onSelect: (file: File) => void;
 };
 
+/** Ceiling for in-browser parsing — a huge document would freeze the tab. */
+const MAX_CONTRACT_BYTES = 10 * 1024 * 1024;
+
+/** Bytes rendered as a locale-aware "13 kB" / "1.4 MB". */
+const formatFileSize = (intl: IntlShape, bytes: number): string => {
+  const asUnit = (value: number, unit: 'kilobyte' | 'megabyte', fractionDigits: number) =>
+    intl.formatNumber(value, {
+      maximumFractionDigits: fractionDigits,
+      style: 'unit',
+      unit,
+      unitDisplay: 'short',
+    });
+  if (bytes >= 1024 * 1024) {
+    return asUnit(bytes / (1024 * 1024), 'megabyte', 1);
+  }
+  // Anything under a kilobyte still reads as "1 kB" rather than a bare "0".
+  return asUnit(Math.max(1, Math.round(bytes / 1024)), 'kilobyte', 0);
+};
+
+/** The extension badge on a chosen file, e.g. `YML`. Empty when there is none. */
+const fileExtensionLabel = (fileName: string): string => {
+  const dot = fileName.lastIndexOf('.');
+  return dot === -1 ? '' : fileName.slice(dot + 1).toUpperCase();
+};
+
+/** The soft tinted square a drop-zone icon sits in. */
+const iconTileSx = (size: number) => (theme: Theme) => ({
+  alignItems: 'center',
+  bgcolor: alpha(theme.palette.primary.main, 0.12),
+  borderRadius: 2,
+  color: 'primary.main',
+  display: 'flex',
+  flexShrink: 0,
+  height: theme.spacing(size),
+  justifyContent: 'center',
+  width: theme.spacing(size),
+});
+
 /**
  * Drop area and file picker for a single contract file.
  *
- * The chosen file is listed below the drop area rather than inside it — the
- * area itself is a `<label>`, so a remove button placed within it would reopen
- * the picker on the very click meant to clear the selection.
+ * The chosen file is summarised inside the drop area, so the area itself
+ * cannot be a `<label>`: the remove and replace controls sitting within it
+ * would reopen the picker on the very click meant to clear or swap the
+ * selection. The hidden input is opened through a ref instead, and the
+ * buttons around it stay real buttons for keyboard and screen-reader users.
  */
 const ContractFileControl = ({
   extensions,
@@ -561,6 +660,7 @@ const ContractFileControl = ({
 }: ContractFileControlProps) => {
   const intl = useIntl();
   const [draggedOver, setDraggedOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const helperId = 'contractFile-helper';
   const extensionList = extensions.join(', ');
 
@@ -577,6 +677,8 @@ const ContractFileControl = ({
     }
     onReject('unsupported');
   };
+
+  const openPicker = () => inputRef.current?.click();
 
   const handleDrop = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
@@ -600,82 +702,113 @@ const ContractFileControl = ({
         <FormattedMessage {...messages.uploadUnsupported} values={{ extensions: extensionList }} />
       );
     }
-    return <FormattedMessage {...messages.uploadAccepted} values={{ extensions: extensionList }} />;
+    return undefined;
   })();
 
   return (
     <FormControl error={error !== null} fullWidth required>
       <Box
-        component="label"
+        accept={extensions.join(',')}
+        aria-describedby={helperId}
+        component="input"
+        onChange={(event) => {
+          const input = event.target as HTMLInputElement;
+          take(input.files?.[0]);
+          // Lets the same file be picked again after it was removed.
+          input.value = '';
+        }}
+        ref={inputRef}
+        sx={{ display: 'none' }}
+        type="file"
+      />
+
+      <Card
+        onClick={file === null ? openPicker : undefined}
         onDragLeave={() => setDraggedOver(false)}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         sx={(theme) => ({
-          alignItems: 'center',
           bgcolor: draggedOver ? 'action.hover' : 'background.default',
           border: hairline(theme),
           borderColor: draggedOver ? 'primary.main' : 'divider',
-          borderRadius: 1,
+          borderRadius: 2,
           borderStyle: 'dashed',
-          cursor: 'pointer',
-          display: 'flex',
-          justifyContent: 'center',
-          minHeight: 260,
-          px: 3,
-          py: 5,
+          cursor: file === null ? 'pointer' : 'default',
+          minHeight: 300,
         })}
+        variant="outlined"
       >
-        <Stack spacing={1} sx={{ alignItems: 'center', textAlign: 'center' }}>
-          <Typography sx={{ fontWeight: 700 }} variant="subtitle1">
-            <FormattedMessage {...messages.uploadTitle} />
-          </Typography>
-          <Typography color="text.secondary" variant="body2">
-            <FormattedMessage {...messages.uploadHint} />
-          </Typography>
-          <Box
-            aria-describedby={helperId}
-            accept={extensions.join(',')}
-            component="input"
-            onChange={(event) => {
-              const input = event.target as HTMLInputElement;
-              take(input.files?.[0]);
-              // Lets the same file be picked again after it was removed.
-              input.value = '';
-            }}
-            sx={{ display: 'none' }}
-            type="file"
-          />
-          {/* `span`, not the default `button`: a nested button would swallow
-              the click the surrounding label needs to open the picker. */}
-          <Button
-            component="span"
-            startIcon={<Upload size={18} />}
-            sx={{ mt: 2 }}
-            variant="contained"
-          >
-            <FormattedMessage {...messages.uploadAction} />
-          </Button>
-        </Stack>
-      </Box>
+        <CardContent
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            justifyContent: 'center',
+            minHeight: 300,
+            p: 3,
+            '&:last-child': { pb: 3 },
+          }}
+        >
+          {file === null ? (
+            <Stack spacing={1} sx={{ alignItems: 'center', textAlign: 'center' }}>
+              <Box sx={iconTileSx(7)}>
+                <Upload size={24} />
+              </Box>
+              <Typography sx={{ fontWeight: 700, pt: 1 }} variant="h6">
+                <FormattedMessage {...messages.uploadTitle} />
+              </Typography>
+              <Typography color="text.secondary" variant="body2">
+                <FormattedMessage {...messages.uploadHint} values={{ extensions: extensionList }} />
+              </Typography>
+              <Button onClick={openPicker} sx={{ mt: 2 }} type="button" variant="contained">
+                <FormattedMessage {...messages.uploadAction} />
+              </Button>
+            </Stack>
+          ) : (
+            <Stack spacing={2} sx={{ alignItems: 'center', width: '100%' }}>
+              <Typography sx={{ fontWeight: 700 }} variant="h6">
+                <FormattedMessage {...messages.uploadedFile} />
+              </Typography>
+              <Card sx={{ maxWidth: 480, width: '100%' }}>
+                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                  <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+                    <Box sx={iconTileSx(5)}>
+                      <FileText size={20} />
+                    </Box>
+                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', minWidth: 0 }}>
+                        <Typography noWrap sx={{ fontWeight: 600 }} variant="body1">
+                          {file.name}
+                        </Typography>
+                        {fileExtensionLabel(file.name) === '' ? null : (
+                          <Chip label={fileExtensionLabel(file.name)} size="small" />
+                        )}
+                      </Stack>
+                      <Typography color="text.secondary" variant="caption">
+                        {formatFileSize(intl, file.size)}
+                      </Typography>
+                    </Box>
+                    <IconButton
+                      aria-label={intl.formatMessage(messages.uploadRemove, {
+                        fileName: file.name,
+                      })}
+                      color="error"
+                      onClick={() => onReject('removed')}
+                      size="small"
+                      type="button"
+                    >
+                      <Trash2 size={16} />
+                    </IconButton>
+                  </Stack>
+                </CardContent>
+              </Card>
+            </Stack>
+          )}
+        </CardContent>
+      </Card>
 
-      {file === null ? null : (
-        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mt: 1.5 }}>
-          <Typography sx={{ fontWeight: 600 }} variant="body2">
-            {file.name}
-          </Typography>
-          <IconButton
-            aria-label={intl.formatMessage(messages.uploadRemove, {
-              fileName: file.name,
-            })}
-            onClick={() => onReject('removed')}
-            size="small"
-          >
-            <X size={16} />
-          </IconButton>
-        </Stack>
+      {helperText === undefined ? null : (
+        <FormHelperText id={helperId}>{helperText}</FormHelperText>
       )}
-
-      <FormHelperText id={helperId}>{helperText}</FormHelperText>
     </FormControl>
   );
 };
@@ -685,9 +818,6 @@ type SpecDocument = Record<string, unknown>;
 
 /** How long the SwaggerHub organization field settles before it is looked up. */
 const LOOKUP_DEBOUNCE_MS = 450;
-
-/** Ceiling for in-browser parsing — a huge document would freeze the tab. */
-const MAX_CONTRACT_BYTES = 10 * 1024 * 1024;
 
 /** How long a contract download may take before it is abandoned. */
 const CONTRACT_FETCH_TIMEOUT_MS = 20_000;
@@ -702,6 +832,13 @@ export type FetchedContract = {
    * has something to show in both cases.
    */
   spec: SpecDocument;
+  /**
+   * The original text exactly as uploaded or downloaded. Preserved so the
+   * source view shows what the user actually gave us (comments, anchors,
+   * original format) and so draft submission can send the same bytes to the
+   * backend without a lossy round-trip through the parsed object.
+   */
+  rawText: string;
   /** The source it came from, for whoever consumes this step. */
   values: ContractValues;
   /** Things worth saying about it that didn't stop the import. */
@@ -718,8 +855,6 @@ export type ContractFetchFailure =
 
 export type ContractFetchResult =
   | { contract: FetchedContract; status: 'fetched' }
-  /** Read and parsed, but not a definition this step can use. */
-  | { issues: SpecIssue[]; status: 'invalidSpec' }
   | { status: ContractFetchFailure };
 
 /**
@@ -752,25 +887,21 @@ const parseContractText = (text: string): SpecDocument | null => {
 };
 
 /**
- * The last gate a parsed document passes: is it an OpenAPI definition this
- * step can preview and create from?
+ * Wraps a parsed document into a fetched contract ready for preview.
  *
- * Applied to every source, so a file dropped on the upload tab is held to the
- * same standard as one downloaded from a URL.
+ * Dialect is read from the spec but validation is deferred entirely to the
+ * backend validate-openapi call; warnings are filled in there and merged in
+ * once that response arrives. Warnings start empty here so the preview renders
+ * immediately while the backend call is still in-flight.
  */
-const acceptSpec = (spec: SpecDocument, values: ContractValues): ContractFetchResult => {
-  const validation = validateApiSpec(spec);
-  return validation.status === 'valid'
-    ? {
-        contract: {
-          dialect: validation.dialect,
-          spec,
-          values,
-          warnings: validation.warnings,
-        },
-        status: 'fetched',
-      }
-    : { issues: validation.issues, status: 'invalidSpec' };
+const acceptSpec = (rawText: string, spec: SpecDocument, values: ContractValues): ContractFetchResult => {
+  const dialectResult = readDialectFromSpec(spec);
+  const dialect: SpecDialect =
+    dialectResult === null || dialectResult === 'unsupported' ? 'openapi-3.0' : dialectResult;
+  return {
+    contract: { dialect, rawText, spec, values, warnings: [] },
+    status: 'fetched',
+  };
 };
 
 /**
@@ -809,7 +940,7 @@ const fetchDocumentFrom = async (
     return { status: 'oversized' };
   }
   const spec = parseContractText(text);
-  return spec === null ? { status: 'unreadable' } : acceptSpec(spec, values);
+  return spec === null ? { status: 'unreadable' } : acceptSpec(text, spec, values);
 };
 
 /**
@@ -838,8 +969,9 @@ export const fetchContractForPreview = async (
         return { status: 'oversized' };
       }
       try {
-        const spec = parseContractText(await readContractText(values.file));
-        return spec === null ? { status: 'unreadable' } : acceptSpec(spec, values);
+        const text = await readContractText(values.file);
+        const spec = parseContractText(text);
+        return spec === null ? { status: 'unreadable' } : acceptSpec(text, spec, values);
       } catch {
         // Malformed YAML/JSON — js-yaml's own message is developer-facing.
         return { status: 'unreadable' };
@@ -881,6 +1013,42 @@ export const fetchContractForPreview = async (
   }
 };
 
+/**
+ * Whether two selections name the same contract, comparing only the fields
+ * that belong to their shared source.
+ *
+ * Used both ways round: to tell whether a fetched contract still describes the
+ * form, and to tell whether a fetch about to be queued would return what is
+ * already in hand.
+ */
+const isSameContractSource = (
+  left: ContractValues | undefined,
+  right: ContractValues | undefined,
+): boolean => {
+  if (left === undefined || right === undefined || left.sourceKey !== right.sourceKey) {
+    return false;
+  }
+  switch (left.sourceKey) {
+    case 'url':
+      return left.url === right.url;
+    case 'file':
+      return left.file === right.file;
+    case 'github':
+      return (
+        left.repositoryUrl === right.repositoryUrl &&
+        left.repositoryBranch === right.repositoryBranch &&
+        left.repositoryDirectory === right.repositoryDirectory &&
+        left.repositoryFile === right.repositoryFile
+      );
+    case 'swaggerhub':
+      return (
+        left.swaggerHubOrganization === right.swaggerHubOrganization &&
+        left.swaggerHubApi === right.swaggerHubApi &&
+        left.swaggerHubVersion === right.swaggerHubVersion
+      );
+  }
+};
+
 /** API types this step offers, in the order the map declares them. */
 const CONTRACT_API_TYPES: ApiType[] = Object.keys(CONTRACT_SOURCES_BY_API_TYPE)
   .map((key) => API_TYPES.find((apiType) => apiType.key === key))
@@ -901,6 +1069,7 @@ export const ContractSourceForm = ({
   onRefreshSwaggerHubOrganizations,
 }: ContractSourceFormProps) => {
   const intl = useIntl();
+  const validateSpec = useValidateOpenApiSpec();
 
   const [apiTypeKey] = useState(() => initialApiTypeKey ?? apiTypes[0]?.key ?? '');
   const [sourceKey, setSourceKey] = useState<ContractSourceKey>(
@@ -958,6 +1127,16 @@ export const ContractSourceForm = ({
     { status: 'fetched' }
   > | null>(null);
   const [fetching, setFetching] = useState(false);
+  const [backendValidationErrors, setBackendValidationErrors] = useState<
+    OpenAPIValidationError[] | null
+  >(null);
+  /**
+   * The source a fetch has been asked for, or `null` while none has. Held as
+   * state so the request is made by an effect rather than inside the handler
+   * that raised it, which keeps a reply the form has since moved on from out
+   * of the preview.
+   */
+  const [request, setRequest] = useState<ContractValues | null>(null);
   /**
    * What the last successful fetch returned. Reported upward only while it
    * still describes what the form holds, editing the URL or swapping the file
@@ -1139,19 +1318,58 @@ export const ContractSourceForm = ({
 
   const handleSourceChange = (next: ContractSourceKey) => {
     setSourceKey(next);
+    // Reset every source's input so the previous tab's values don't persist
+    contractUrl.setValue('');
+    setFile(null);
+    setFileError(null);
+    setFetched(null);
+    setRequest(null);
+    setFetching(false);
     setFetchError(null);
+    setBackendValidationErrors(null);
   };
 
+  /** An accepted file is a finished selection, so it is read straight away. */
   const handleFileSelect = (next: File) => {
     setFileError(null);
     setFetchError(null);
     setFile(next);
+    requestFetch({ apiTypeKey, file: next, sourceKey: 'file' });
   };
 
   /** Rejects the current file using the provided reason. */
   const handleFileReject = (reason: ContractFileRejection) => {
     setFile(null);
     setFileError(reason === 'unsupported' ? 'unsupported' : null);
+  };
+
+  /** What the form holds right now, uncommitted and unvalidated. */
+  const currentValues: ContractValues = {
+    apiTypeKey,
+    file: file ?? undefined,
+    repositoryBranch: branch,
+    repositoryDirectory: directory,
+    repositoryFile: contractFile,
+    repositoryUrl: repositoryUrl.value.trim(),
+    sourceKey,
+    swaggerHubApi: selectedSwaggerHubApi?.slug,
+    swaggerHubOrganization: organizationName,
+    swaggerHubVersion,
+    url: contractUrl.value.trim(),
+  };
+
+  /**
+   * Asks for `values` to be fetched, unless there is nothing to gain: one is
+   * already running, or the contract in hand came from exactly these values.
+   * That second case is what keeps a blur on a field nobody edited from
+   * re-reading the document; and from discarding an edit made in the preview
+   * since it was read.
+   */
+  const requestFetch = (values: ContractValues) => {
+    if (isSameContractSource(fetched?.values, values)) {
+      return;
+    }
+    setRequest(values);
   };
 
   /**
@@ -1205,29 +1423,99 @@ export const ContractSourceForm = ({
     return null;
   };
 
-  /** Fetch: validates the contract and fills the preview, without advancing. */
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  /**
+   * Enter in a text field. There is no fetch button to press, so this is the
+   * keyboard's way of asking for one without leaving the field first.
+   */
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setFetchError(null);
-
     const values = collectValues();
-    if (values === null) {
+    if (values !== null) {
+      requestFetch(values);
+    }
+  };
+
+  /**
+   * Reads whatever was last asked for. An effect rather than an `await` in the
+   * handler that asked: a request the form has already moved past is dropped
+   * on arrival instead of landing in the preview behind the current one.
+   *
+   * After the frontend parse succeeds the spec is sent to the backend
+   * validator (kin-openapi). Backend errors are shown as a separate Alert;
+   * the contract is only handed to the preview if both passes succeed.
+   */
+  useEffect(() => {
+    if (request === null) {
       return;
     }
 
+    let current = true;
+    setFetchError(null);
+    setBackendValidationErrors(null);
     setFetching(true);
-    try {
-      const result = await fetchContractForPreview(values);
+
+    void (async () => {
+      const result = await fetchContractForPreview(request);
+      if (!current) return;
+
       if (result.status !== 'fetched') {
+        setFetching(false);
         setFetchError(result);
         return;
       }
 
-      // Fetched: the effect below hands it to the panel, which renders it in
-      // the preview and unlocks Next.
-      setFetched(result.contract);
-    } finally {
+      // Backend validation — send the original text so format, comments and
+      // anchors are preserved in the validated bytes. A network failure is
+      // non-fatal: we proceed so a temporary outage doesn't block the create
+      // flow entirely.
+      try {
+        // Extend to other api types by selecting a validator for the
+        // detected dialect if required
+        const validation = request.apiTypeKey === 'rest'
+          ? await validateSpec.mutateAsync(result.contract.rawText)
+          : { isValid: true, errors: [], warnings: [] };
+        if (!current) return;
+
+        if (!validation.isValid) {
+          setFetching(false);
+          setBackendValidationErrors(validation.errors);
+          return;
+        }
+
+        // FE warning check: missingTitle, missingVersion, noServers, externalRefs.
+        // Structural errors (noPaths, noOperations, badPathKeys) are handled by BE.
+        const warnings: SpecIssue[] = collectSpecWarnings(result.contract.spec, result.contract.rawText);
+
+        if (!current) return;
+        setFetching(false);
+        setFetched({ ...result.contract, warnings });
+        return;
+      } catch {
+        // Network/auth error — don't block the user; validation is best-effort here.
+      }
+
+      if (!current) return;
       setFetching(false);
+      setFetched(result.contract);
+    })();
+
+    return () => {
+      current = false;
+    };
+    // validateSpec.mutateAsync is stable across renders (TanStack Query guarantee).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request]);
+
+  /**
+   * Fills the URL field with the sample and reads it straight away. Clicking
+   * the link blurs the field before the value lands, so the blur alone would
+   * fetch the value being replaced rather than the sample.
+   */
+  const fillWithSampleUrl = () => {
+    const sample = SAMPLE_CONTRACT_URLS[apiTypeKey] ?? '';
+    contractUrl.setValue(sample);
+    if (sample !== '') {
+      requestFetch({ apiTypeKey, sourceKey: 'url', url: sample });
     }
   };
 
@@ -1262,6 +1550,7 @@ export const ContractSourceForm = ({
    */
   useEffect(() => {
     setFetchError(null);
+    setBackendValidationErrors(null);
   }, [
     branch,
     contractFile,
@@ -1276,9 +1565,6 @@ export const ContractSourceForm = ({
 
   /** Why the last fetch came back empty, as a sentence; `null` when it didn't. */
   const fetchErrorText = (() => {
-    if (fetchError?.status === 'invalidSpec') {
-      return <SpecIssueList issues={fetchError.issues} />;
-    }
     switch (fetchError?.status) {
       case 'oversized':
         return <FormattedMessage {...messages.specOversized} />;
@@ -1293,56 +1579,12 @@ export const ContractSourceForm = ({
     }
   })();
 
-  /** Fetch stays inert until the active source has something to fetch. */
-  const fetchDisabled = (() => {
-    switch (sourceKey) {
-      case 'file':
-        return file === null;
-      case 'github':
-        // A repository alone isn't enough: the fetch needs a contract file
-        // inside a directory of a branch.
-        return contractFile === '';
-      case 'swaggerhub':
-        // An organization alone isn't enough: the fetch needs the API and the
-        // version chosen inside it.
-        return selectedSwaggerHubApi === undefined || swaggerHubVersion === '';
-      default:
-        return contractUrl.isEmpty;
-    }
-  })();
-
   /**
    * Whether the fetched contract still matches the form. Compared rather than
    * invalidated on every keystroke: one derived answer beats resetting a flag
    * from four separate change handlers.
    */
-  const fetchedIsCurrent = (() => {
-    const fetchedValues = fetched?.values;
-    if (fetchedValues === undefined || fetchedValues.sourceKey !== sourceKey) {
-      return false;
-    }
-    switch (sourceKey) {
-      case 'url':
-        return fetchedValues.url === contractUrl.value.trim();
-      case 'file':
-        return fetchedValues.file === file;
-      case 'github':
-        return (
-          fetchedValues.repositoryUrl === repositoryUrl.value.trim() &&
-          fetchedValues.repositoryBranch === branch &&
-          fetchedValues.repositoryDirectory === directory &&
-          fetchedValues.repositoryFile === contractFile
-        );
-      case 'swaggerhub':
-        return (
-          fetchedValues.swaggerHubOrganization === organizationName &&
-          fetchedValues.swaggerHubApi === selectedSwaggerHubApi?.slug &&
-          fetchedValues.swaggerHubVersion === swaggerHubVersion
-        );
-      default:
-        return false;
-    }
-  })();
+  const fetchedIsCurrent = isSameContractSource(fetched?.values, currentValues);
 
   // Lifted rather than pushed from each change handler: staleness is derived
   // from four inputs, and one effect over the derived answer beats invalidating
@@ -1352,14 +1594,10 @@ export const ContractSourceForm = ({
   }, [fetched, fetchedIsCurrent, onContractChange]);
 
   return (
-    <Stack
-      component="form"
-      noValidate
-      onSubmit={(event: FormEvent<HTMLFormElement>) => {
-        void handleSubmit(event);
-      }}
-      spacing={3}
-    >
+    // Still a form, with no button to submit it: Enter in a text field reads
+    // the contract without having to leave the field first. Back and Next
+    // belong to the panel around this one.
+    <Stack component="form" noValidate onSubmit={handleSubmit} spacing={3}>
       <FormControl>
         <ToggleButtonGroup
           aria-label={intl.formatMessage(messages.sourceLabel)}
@@ -1400,7 +1638,7 @@ export const ContractSourceForm = ({
           value={sourceKey}
         >
           {availableSources.map((candidate) => (
-            <ToggleButton key={candidate} value={candidate}>
+            <ToggleButton key={candidate} type="button" value={candidate}>
               {intl.formatMessage(SOURCE_LABELS[candidate])}
             </ToggleButton>
           ))}
@@ -1409,17 +1647,62 @@ export const ContractSourceForm = ({
 
       {sourceKey === 'url' ? (
         <Form.Stack spacing={1}>
-          <ContractTextControl
-            field={contractUrl}
-            id="contractUrl"
-            invalidMessage={messages.urlInvalid}
-            label={intl.formatMessage(messages.urlLabel)}
-            placeholder={intl.formatMessage(messages.urlPlaceholder)}
-            requiredMessage={messages.urlRequired}
-          />
-          <SampleLink
-            onClick={() => contractUrl.setValue(SAMPLE_CONTRACT_URLS[apiTypeKey] ?? '')}
-          />
+          <FormControl error={contractUrl.error !== null} fullWidth required>
+            <FormLabel htmlFor="contractUrl">{intl.formatMessage(messages.urlLabel)}</FormLabel>
+            <OutlinedInput
+              aria-describedby="contractUrl-helper"
+              endAdornment={
+                contractUrl.value === '' ? undefined : (
+                  <InputAdornment position="end">
+                    <Tooltip title={intl.formatMessage(messages.clearUrl)}>
+                      <IconButton
+                        aria-label={intl.formatMessage(messages.clearUrl)}
+                        onClick={() => {
+                          contractUrl.setValue('');
+                          setFetched(null);
+                          setRequest(null);
+                          setFetching(false);
+                          setFetchError(null);
+                        }}
+                        onMouseDown={(event) => event.preventDefault()}
+                        size="small"
+                        type="button"
+                      >
+                        <Broom size={18} />
+                      </IconButton>
+                    </Tooltip>
+                  </InputAdornment>
+                )
+              }
+              id="contractUrl"
+              name="contractUrl"
+              onBlur={() => {
+                // Leaving a valid URL is the whole gesture: the contract is
+                // read then, rather than on a button afterwards.
+                if (contractUrl.commit()) {
+                  requestFetch({
+                    apiTypeKey,
+                    sourceKey: 'url',
+                    url: contractUrl.value.trim(),
+                  });
+                }
+              }}
+              onChange={(event) => contractUrl.handleChange(event.target.value)}
+              placeholder={intl.formatMessage(messages.urlPlaceholder)}
+              sx={{ mt: 0.75 }}
+              value={contractUrl.value}
+            />
+            {contractUrl.error === null ? null : (
+              <FormHelperText id="contractUrl-helper">
+                <FormattedMessage
+                  {...(contractUrl.error === 'required'
+                    ? messages.urlRequired
+                    : messages.urlInvalid)}
+                />
+              </FormHelperText>
+            )}
+          </FormControl>
+          <SampleLink onClick={fillWithSampleUrl} />
         </Form.Stack>
       ) : null}
 
@@ -1506,6 +1789,7 @@ export const ContractSourceForm = ({
                                 edge="end"
                                 onClick={() => setDirectoryDialogOpen(true)}
                                 size="small"
+                                type="button"
                               >
                                 <Pencil size={16} />
                               </IconButton>
@@ -1610,10 +1894,15 @@ export const ContractSourceForm = ({
             sx={{ alignSelf: 'flex-start' }}
             value="public"
           >
-            <ToggleButton sx={{ px: 3, textTransform: 'none' }} value="public">
+            <ToggleButton sx={{ px: 3, textTransform: 'none' }} type="button" value="public">
               <FormattedMessage {...messages.swaggerHubPublic} />
             </ToggleButton>
-            <ToggleButton disabled sx={{ px: 3, textTransform: 'none' }} value="authorized">
+            <ToggleButton
+              disabled
+              sx={{ px: 3, textTransform: 'none' }}
+              type="button"
+              value="authorized"
+            >
               <Tooltip title={intl.formatMessage(messages.swaggerHubAuthorizedHint)}>
                 <Box component="span">
                   <FormattedMessage {...messages.swaggerHubAuthorized} />
@@ -1666,6 +1955,7 @@ export const ContractSourceForm = ({
                   aria-label={intl.formatMessage(messages.swaggerHubRefresh)}
                   onClick={onRefreshSwaggerHubOrganizations}
                   size="small"
+                  type="button"
                 >
                   <RefreshCw size={18} />
                 </IconButton>
@@ -1724,8 +2014,34 @@ export const ContractSourceForm = ({
         </Stack>
       ) : null}
 
+      {/* The read starts on its own; on leaving a finished URL, or on
+          choosing a file; so this line is the only sign that it is running. */}
+      {fetching ? (
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+          <CircularProgress size={16} />
+          <Typography color="text.secondary" variant="body2">
+            <FormattedMessage {...messages.fetching} />
+          </Typography>
+        </Stack>
+      ) : null}
+
       {/* Fetch errors appear under the active source panel. */}
       {fetchErrorText === null ? null : <Alert severity="error">{fetchErrorText}</Alert>}
+
+      {/* Backend validation errors — shown when kin-openapi rejects the spec. */}
+      {backendValidationErrors !== null && backendValidationErrors.length > 0 ? (
+        <Alert severity="error">
+          <FormattedMessage {...messages.specInvalidByBackend} />
+          <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+            {backendValidationErrors.map((e, i) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <Typography component="li" key={i} variant="body2">
+                {e.message}
+              </Typography>
+            ))}
+          </Box>
+        </Alert>
+      ) : null}
 
       {/* Definition warnings; cleared with the contract, and withdrawn once
           the definition has been edited past the one they were raised on. */}
@@ -1734,20 +2050,6 @@ export const ContractSourceForm = ({
           <SpecIssueList issues={fetched?.warnings ?? []} />
         </Alert>
       ) : null}
-
-      <Divider />
-
-      {/* Enter in a URL field fetches. Back and Next are in the panel. */}
-      <Button
-        disabled={fetchDisabled}
-        loading={fetching}
-        startIcon={<Download size={18} />}
-        sx={{ alignSelf: 'flex-start' }}
-        type="submit"
-        variant="contained"
-      >
-        <FormattedMessage {...messages.fetch} />
-      </Button>
     </Stack>
   );
 };

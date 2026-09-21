@@ -207,6 +207,23 @@ var ValidGatewayTokenStatuses = map[string]bool{
 	GatewayTokenStatusRevoked: true,
 }
 
+// API Portal status constants.
+const (
+	APIPortalStatusPending = "pending"
+	APIPortalStatusActive  = "active"
+	APIPortalStatusFailed  = "failed"
+)
+
+// API Portal outbound-auth constants. The scheme is a custom RFC 7235 name,
+// not OAuth 2.0 Bearer; the portal middleware sha256s the raw for verification.
+const (
+	// APIPortalSharedKeyAuthScheme is the Authorization-header scheme name; matched case-insensitively by the portal.
+	APIPortalSharedKeyAuthScheme = "SharedKey"
+
+	// APIPortalSharedKeyHexLength is the required raw-key length in hex chars (32 bytes of entropy).
+	APIPortalSharedKeyHexLength = 64
+)
+
 // ValidArtifactKinds holds accepted values for artifacts.type for the core (non-plugin)
 // artifact kinds. Plugin-owned kinds (e.g. WebSubApi, WebBrokerApi) are registered
 // into the ArtifactTableRegistry during plugin Init.
@@ -251,6 +268,15 @@ const (
 	MetadataKeyVhostMain = "vhostMain"
 	// MetadataKeyVhostSandbox is the metadata key for the per-deployment sandbox vhost value.
 	MetadataKeyVhostSandbox = "vhostSandbox"
+	// MetadataKeyUpstreamAuthValue is the metadata key for the per-deployment upstream
+	// credential of an LLM provider — the value it authenticates to its upstream with.
+	// It carries a {{ secret "handle" }} reference rather than the credential itself,
+	// because deployment metadata is returned with every read of a deployment.
+	MetadataKeyUpstreamAuthValue = "upstreamAuthValue"
+	// MetadataKeyUpstreamAuthHeader is the metadata key for the per-deployment header an
+	// LLM provider's upstream credential is sent in. It only applies where the upstream
+	// authenticates with an api-key, which is the only type whose header is a choice.
+	MetadataKeyUpstreamAuthHeader = "upstreamAuthHeader"
 	// VhostGatewayDefault is the sentinel value that instructs the gateway-controller to resolve
 	// and persist the current gateway default vhosts, ensuring deployments are immune to future
 	// gateway config changes.

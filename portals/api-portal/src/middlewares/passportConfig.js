@@ -18,13 +18,98 @@
 
 const passport = require('passport');
 const OAuth2Strategy = require('passport-oauth2');
-const { safeDecodeJwt, getNestedClaim } = require('../utils/jwtDecode');
+const { jwtVerify, createRemoteJWKSet } = require('jose');
+const { getNestedClaim } = require('../utils/jwtDecode');
 const { config } = require('../config/configLoader');
 const { portalRoles } = require('./authorization');
 const constants = require('../utils/constants');
 const logger = require('../config/logger');
 const orgDao = require('../dao/organizationDao');
 const { resolveScopedOrg } = require('./authMiddleware');
+const orgContext = require('../utils/orgContext');
+const { CustomError } = require('../utils/errors/customErrors');
+
+// One JWKS resolver per URL, kept at module scope. `createRemoteJWKSet`
+// keeps an in-memory key cache + rate-limits refreshes; recreating it per
+// call throws that state away and pushes the JWKS endpoint on every login.
+// Keyed by URL so a config change (or a test overriding the URL) creates a
+// new resolver rather than serving stale keys from another endpoint.
+const jwksResolvers = new Map();
+function getJwksResolver(jwksURL) {
+    let resolver = jwksResolvers.get(jwksURL);
+    if (!resolver) {
+        resolver = createRemoteJWKSet(new URL(jwksURL));
+        jwksResolvers.set(jwksURL, resolver);
+    }
+    return resolver;
+}
+
+/**
+ * Verifies an IDP-issued JWT against the configured JWKS. Throws on any failure.
+ * `audience` is optional so the caller can pick the right one per token type
+ * (id_token: clientId per OIDC Core §3.1.3.7; access_token: IDP-configured).
+ * Fails closed on missing token so a callback never creates an empty-claims session.
+ */
+async function verifyIdpJwt(token, audience) {
+    if (!token) {
+        throw new Error('token is required');
+    }
+    const jwksURL = config.auth.idp?.jwksUrl;
+    if (!jwksURL) {
+        throw new Error('IDP jwksUrl is not configured; cannot verify token');
+    }
+    const jwks = getJwksResolver(jwksURL);
+    const options = { algorithms: constants.JWT_ASYMMETRIC_ALGORITHMS };
+    if (config.auth.idp?.issuer) options.issuer = config.auth.idp.issuer;
+    if (audience) options.audience = audience;
+    const { payload } = await jwtVerify(token, jwks, options);
+    return payload;
+}
+
+/**
+ * Checks an IDP-asserted organization claim against the organization this instance
+ * serves.
+ *
+ * The decision itself is orgContext.requirePinnedOrg's — deliberately, rather than
+ * a second resolve-and-compare written out here. There is no IDP in the integration
+ * fixture, so this path can only be reached in a real IDP deployment; sharing the
+ * helper means the rule being applied is the one the REST-API suite already
+ * exercises end-to-end (organizations.spec.js's 403s), and this function is reduced
+ * to translating its outcome into a login failure. It also resolves the claim
+ * before comparing, so a handle, display name, or idp_ref_id spelling of the same
+ * organization all match — which matters here because the flavour of the mapped
+ * claim is IDP-specific.
+ *
+ * A rejection is a flat 403 whether the organization is unknown or merely someone
+ * else's (requirePinnedOrg collapses the two), so a login attempt can't be used to
+ * probe which organizations exist in the shared database.
+ *
+ * @param {string} organizationId the mapped organization claim from the ID token
+ * @returns {Promise<Error|null>} null when the login may proceed, else an Error
+ *   carrying the status the callback route should render
+ */
+async function assertLoginOrgAllowed(organizationId) {
+    try {
+        await orgContext.requirePinnedOrg(organizationId);
+        return null;
+    } catch (err) {
+        if (err instanceof CustomError && err.statusCode === 403) {
+            logger.warn('Rejected login: token organization is not this portal\'s', {
+                expected: orgContext.getHandle(),
+                asserted: organizationId,
+            });
+            const failure = new Error('Forbidden');
+            failure.status = 403;
+            return failure;
+        }
+        // A database/lookup fault, not a verdict about the organization — don't let
+        // it read as "your organization is wrong".
+        logger.error('Organization lookup failed during login', { error: err.message });
+        const failure = new Error('Login failed');
+        failure.status = 500;
+        return failure;
+    }
+}
 
 function configurePassport(SERVER_ID) {
     if (config.auth.mode === 'idp') {

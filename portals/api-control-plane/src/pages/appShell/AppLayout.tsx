@@ -44,14 +44,16 @@ import { AppSidebar } from './AppSidebar';
 import { FormattedMessage, useIntl } from 'react-intl';
 
 /**
- * Full-page creation flows, which the shell renders without a breadcrumb trail.
+ * Full-page flows, which the shell renders without a breadcrumb trail.
  *
- * A wizard is creating the very scope a trail would describe, so the crumbs can
- * only point at where the user came from — noise beside a form that owns the
- * whole page. Built from the route builders rather than written out, so a path
- * change cannot silently stop matching (`routes.*` is the single source).
+ * A creation wizard is building the very scope a trail would describe, and the
+ * API publication page has its own back button to the list it came from, so the
+ * crumbs can only repeat where the user came from — noise beside a form that
+ * owns the whole page. Built from the route builders rather than written out,
+ * so a path change cannot silently stop matching (`routes.*` is the single
+ * source).
  */
-const BREADCRUMB_FREE_ROUTES = [routes.newApi(), routes.newGateway()];
+const BREADCRUMB_FREE_ROUTES = [routes.newApi(), routes.newGateway(), routes.apiPortalPublish()];
 
 export default function AppLayout() {
   const intl = useIntl();
@@ -71,6 +73,7 @@ export default function AppLayout() {
   const port: CloudHostPort = {
     orgHandle: params.orgHandle ?? '',
     projectHandle: params.projectHandler,
+    apiHandle: params.apiHandler,
     navigate,
     notify,
     apiFetch: extensionApiFetch,
@@ -123,26 +126,28 @@ export default function AppLayout() {
 
         <AppShell.Main>
           <Box sx={{ minWidth: 0, width: '100%', p: 1 }}>
-            <PageContent fullWidth>
+            <PageContent fullWidth sx={{ py: 5 }}>
               <Stack spacing={1}>
                 {!hidesBreadcrumbs && breadcrumbItems.length > 1 && (
-                  <AppBreadcrumbs
-                    items={breadcrumbItems}
-                    sx={(theme) => ({
-                      '& .MuiBreadcrumbs-li .MuiTypography-root': {
-                        fontSize: theme.typography.body2.fontSize,
-                        opacity: 0.55,
-                      },
-                      '& .MuiBreadcrumbs-li:last-of-type .MuiTypography-root': {
-                        color: 'text.primary',
-                        fontWeight: theme.typography.fontWeightMedium,
-                        opacity: 1,
-                      },
-                      '& .MuiBreadcrumbs-separator': {
-                        opacity: 0.45,
-                      },
-                    })}
-                  />
+                  <Box sx={{ pb: 1 }}>
+                    <AppBreadcrumbs
+                      items={breadcrumbItems}
+                      sx={(theme) => ({
+                        '& .MuiBreadcrumbs-li .MuiTypography-root': {
+                          fontSize: theme.typography.body2.fontSize,
+                          opacity: 0.55,
+                        },
+                        '& .MuiBreadcrumbs-li:last-of-type .MuiTypography-root': {
+                          color: 'text.primary',
+                          fontWeight: theme.typography.fontWeightMedium,
+                          opacity: 1,
+                        },
+                        '& .MuiBreadcrumbs-separator': {
+                          opacity: 0.45,
+                        },
+                      })}
+                    />
+                  </Box>
                 )}
                 {/* Error boundary scoped to routed page only; resets on pathname change */}
                 <ErrorBoundary
