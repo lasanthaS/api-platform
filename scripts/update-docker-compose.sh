@@ -39,9 +39,8 @@ EVENT_GATEWAY_COMPOSE_FILE="event-gateway/docker-compose.yaml"
 API_PORTAL_COMPOSE_FILE="portals/api-portal/docker-compose.yaml"
 API_PORTAL_DIST_COMPOSE_FILE="portals/api-portal/distribution/docker-compose.yaml"
 AI_WORKSPACE_COMPOSE_FILE="portals/ai-workspace/docker-compose.yaml"
-API_CONTROL_PLANE_COMPOSE_FILE="portals/api-control-plane/docker-compose.yaml"
 
-if [ ! -f "$COMPOSE_FILE" ] && [ "$COMPONENT" != "event-gateway" ] && [ "$COMPONENT" != "api-portal" ] && [ "$COMPONENT" != "ai-workspace" ] && [ "$COMPONENT" != "api-control-plane" ]; then
+if [ ! -f "$COMPOSE_FILE" ] && [ "$COMPONENT" != "event-gateway" ] && [ "$COMPONENT" != "api-portal" ] && [ "$COMPONENT" != "ai-workspace" ]; then
     echo "Warning: docker-compose.yaml not found at $COMPOSE_FILE"
     exit 0
 fi
@@ -102,15 +101,6 @@ elif [ "$COMPONENT" = "event-gateway" ]; then
         "$EVENT_GATEWAY_COMPOSE_FILE"
     rm -f "$EVENT_GATEWAY_COMPOSE_FILE.bak"
     echo "Updated $EVENT_GATEWAY_COMPOSE_FILE with event-gateway version $VERSION"
-elif [ "$COMPONENT" = "api-control-plane" ]; then
-    # Update api-control-plane image in main docker-compose.yaml
-    if [ -f "$API_CONTROL_PLANE_COMPOSE_FILE" ]; then
-        sed -i.bak \
-            -e "s|image: .*/api-control-plane:.*|image: ${DOCKER_REGISTRY}/api-control-plane:$VERSION|" \
-            "$API_CONTROL_PLANE_COMPOSE_FILE"
-        rm -f "$API_CONTROL_PLANE_COMPOSE_FILE.bak"
-        echo "Updated $API_CONTROL_PLANE_COMPOSE_FILE with api-control-plane version $VERSION"
-    fi
 elif [ "$COMPONENT" = "platform-api" ]; then
     # Update platform-api image (if present in compose)
     sed -i.bak \

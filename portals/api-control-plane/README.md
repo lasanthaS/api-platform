@@ -49,11 +49,9 @@ npm run dev
 
 Visit `https://localhost:3000`. Vite's dev server proxies `/api/*`,
 `/proxy/*`, and the runtime-config scripts to the BFF (default
-`https://localhost:8083`, override with `BFF_DEV_TARGET`) — everything else
-(hot reload, the app shell) is served by Vite itself. `make bff-run`
-generates a local self-signed certificate for the BFF's listener on first run
-(`../scripts/setup.sh --certs-only`, gitignored under `resources/`). See
-`make help` for the full target list.
+`http://localhost:8082`, override with `BFF_DEV_TARGET`) — everything else
+(hot reload, the app shell) is served by Vite itself. See `make help` for
+the full target list.
 
 ## Validation
 

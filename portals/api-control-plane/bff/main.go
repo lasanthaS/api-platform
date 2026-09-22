@@ -30,7 +30,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,58 +40,6 @@ import (
 	"api-control-plane-bff/internal/config"
 	"api-control-plane-bff/internal/server"
 )
-
-// bannerWidth is the character width of the startup banner's rule lines.
-const bannerWidth = 72
-
-// centerInBanner left-pads s so it sits centered between the banner rules.
-func centerInBanner(s string) string {
-	if len(s) >= bannerWidth {
-		return s
-	}
-	return strings.Repeat(" ", (bannerWidth-len(s))/2) + s
-}
-
-// printStartedMarker writes a large, prominent banner for humans watching the
-// console, matching ai-workspace/api-portal's startup banner style. It's
-// purely decorative — the structured "api-control-plane-bff listening" slog.Info
-// line below is the source of truth for log parsing.
-func printStartedMarker(url string) {
-	rule := strings.Repeat("=", bannerWidth)
-	fmt.Print("\n\n" +
-		rule + "\n" +
-		"\n" +
-		centerInBanner("API Control Plane Started") + "\n\n" +
-		centerInBanner("Visit "+url) + "\n" +
-		"\n" +
-		rule + "\n" +
-		"\n\n")
-}
-
-// portalURL renders the browser-visitable address of the console. When
-// cfg.Domain is set, it is used as-is: the BFF's own listen address is not
-// what an operator should visit when a reverse proxy (e.g. nginx) in front of
-// it exposes a different host or port. Otherwise a wildcard or empty listen
-// host falls back to localhost, since "https://:8082" and
-// "https://0.0.0.0:8082" are not addresses a human can click.
-func portalURL(addr, domain string, tlsEnabled bool) string {
-	scheme := "http"
-	if tlsEnabled {
-		scheme = "https"
-	}
-	if domain != "" {
-		return scheme + "://" + domain + "/"
-	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return scheme + "://" + addr + "/"
-	}
-	switch host {
-	case "", "0.0.0.0", "::", "[::]":
-		host = "localhost"
-	}
-	return scheme + "://" + net.JoinHostPort(host, port) + "/"
-}
 
 func main() {
 	var configPaths multiFlag
@@ -126,18 +73,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-
-	// The startup banner is purely decorative for a human watching the
-	// console, so print it once for the primary listener (HTTPS when
-	// available) rather than once per listener.
-	primary := servers[0]
-	for _, ls := range servers {
-		if ls.protocol == "https" {
-			primary = ls
-			break
-		}
-	}
-	printStartedMarker(portalURL(primary.httpServer.Addr, cfg.Domain, primary.protocol == "https"))
 
 	// Buffered to len(servers): each listener goroutine below sends exactly
 	// once, and a send must never block on a select that already moved on to

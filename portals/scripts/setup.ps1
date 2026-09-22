@@ -8,15 +8,14 @@
 # License at http://www.apache.org/licenses/LICENSE-2.0
 # --------------------------------------------------------------------
 #
-# Shared quickstart setup script for the AI Workspace, the Developer Portal,
-# and the API Control Plane quickstarts (and their standalone distribution
-# zips) on Windows. Windows counterpart of scripts/setup.sh: same flags, same
-# external tools (openssl + htpasswd/docker), same generated files.
+# Shared quickstart setup script for both the AI Workspace and the Developer
+# Portal quickstarts (and their standalone distribution zips) on Windows.
+# Windows counterpart of scripts/setup.sh: same flags, same external tools
+# (openssl + htpasswd/docker), same generated files.
 #
-# Every one of these stacks runs the same Platform API service alongside its
-# own headline component (ai-workspace, api-portal, or api-control-plane)
-# behind docker-compose profiles, so this single script provisions everything
-# any of them (or several at once) might need:
+# Both stacks run the same three services - platform-api, ai-workspace,
+# api-portal - behind docker-compose profiles, so this single script
+# provisions everything either stack (or both at once) might need:
 #
 #   - a self-signed TLS certificate shared by all three services
 #   - API Portal's own encryption key and session secret, written to
@@ -45,15 +44,14 @@
 # and admin credentials. --force deliberately does NOT touch the at-rest
 # encryption key - see --rotate-encryption-key below.
 #
-# Usage (run from portals\ai-workspace, portals\api-portal, or
-# portals\api-control-plane, or from the root of a standalone distribution zip
-# - same script, same layout):
+# Usage (run from either portals\ai-workspace or portals\api-portal, or
+# from the root of a standalone distribution zip - same script, same layout):
 #   powershell -ExecutionPolicy Bypass -File ..\scripts\setup.ps1     # inside the repo checkout
 #   powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1      # inside a distribution zip
 #   pwsh -File ../scripts/setup.ps1                                   # PowerShell 7+ is also fine
 #   docker compose up      # runs in the foreground; starts the profiles listed in
 #                          # COMPOSE_PROFILES in .\.env - edit that line to add
-#                          # ai-workspace / api-portal / api-control-plane / platform-api
+#                          # ai-workspace / api-portal / platform-api
 #
 # Flags:
 #   --force                   regenerate TLS cert, JWT signing keypair, and
@@ -86,13 +84,12 @@ $ProfilesOverride = ''
 # that a plain `docker compose up` (no --profile flag) starts the right
 # services for this pack. Each pack's `make dist` target bakes in its own
 # value here when it copies this shared script into the distribution zip (see
-# the `dist` target in portals/ai-workspace/Makefile,
-# portals/api-portal/Makefile, and portals/api-control-plane/Makefile). Left at
-# this placeholder, it falls back
+# the `dist` target in portals/ai-workspace/Makefile and
+# portals/api-portal/Makefile). Left at this placeholder, it falls back
 # to Get-Pack's directory-name detection below, which is what happens when
 # this script runs straight out of a repo checkout (not a dist zip).
 $DEFAULT_COMPOSE_PROFILES = '__DEFAULT_COMPOSE_PROFILES__'
-# Which pack this is ("api-portal", "ai-workspace", or "api-control-plane") - `make dist`
+# Which pack this is ("api-portal" or "ai-workspace") - `make dist`
 # bakes this in the same way as DEFAULT_COMPOSE_PROFILES above, so a shipped
 # distribution zip never needs to detect it at runtime. Left at this
 # placeholder, Get-Pack below falls back to this pack's own directory name
@@ -122,7 +119,7 @@ Usage: .\scripts\setup.ps1 [--force] [--certs-only] [--rotate-encryption-key] [-
                              itself treated as confirmation.
   --profiles=<a,b,...>      override the default COMPOSE_PROFILES value this
                              script writes to .env. Valid profiles:
-                             ai-workspace, api-portal, api-control-plane, platform-api - e.g.
+                             ai-workspace, api-portal, platform-api - e.g.
                              --profiles=ai-workspace,api-portal,platform-api
                              or --profiles=platform-api
 
@@ -191,7 +188,7 @@ if (Test-Path -LiteralPath (Join-Path $cwd 'docker-compose.yaml')) {
 } elseif (Test-Path -LiteralPath (Join-Path $ThisDir '..\docker-compose.yaml')) {
     $RootDir = (Resolve-Path (Join-Path $ThisDir '..')).Path
 } else {
-    Invoke-Fail 'could not find docker-compose.yaml in the current directory, next to this script, or its parent directory. Run this from portals\ai-workspace, portals\api-portal, portals\api-control-plane, or a distribution zip''s root.'
+    Invoke-Fail 'could not find docker-compose.yaml in the current directory, next to this script, or its parent directory. Run this from portals\ai-workspace, portals\api-portal, or a distribution zip''s root.'
 }
 Set-Location -LiteralPath $RootDir
 
@@ -476,7 +473,6 @@ function Get-Pack {
     $dir = Split-Path -Leaf $RootDir
     if ($dir -eq 'api-portal') { return 'api-portal' }
     if ($dir -eq 'ai-workspace') { return 'ai-workspace' }
-    if ($dir -eq 'api-control-plane') { return 'api-control-plane' }
     return 'unknown'
 }
 
@@ -655,7 +651,6 @@ if (-not [string]::IsNullOrEmpty($ProfilesOverride)) {
     switch ($Pack) {
         'ai-workspace'     { $ComposeProfilesValue = 'ai-workspace,platform-api' }
         'api-portal' { $ComposeProfilesValue = 'api-portal,platform-api' }
-        'api-control-plane' { $ComposeProfilesValue = 'api-control-plane,platform-api' }
         default            { $ComposeProfilesValue = '' }
     }
 }
@@ -687,7 +682,7 @@ if (-not $Force -and (Test-Path -LiteralPath $CertPem) -and (Test-Path -LiteralP
         & openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes `
             -keyout $KeyPem -out $CertPem `
             -subj "/O=WSO2 API Platform/CN=localhost" `
-            -addext "subjectAltName=DNS:localhost,DNS:*.localhost,DNS:platform-api,DNS:ai-workspace,DNS:api-portal,DNS:api-control-plane,DNS:host.docker.internal,IP:127.0.0.1"
+            -addext "subjectAltName=DNS:localhost,DNS:*.localhost,DNS:platform-api,DNS:ai-workspace,DNS:api-portal,DNS:host.docker.internal,IP:127.0.0.1"
     } 'openssl failed to generate the TLS certificate' | Out-Null
     Set-OwnerOnlyAcl $KeyPem
     Write-Log "  - self-signed certificate generated at $CertsDir"
@@ -863,9 +858,9 @@ Write-Host ''
 # written above, so point at it rather than restating the value here.
 if (-not [string]::IsNullOrEmpty($ComposeProfilesValue)) {
     Write-Host '  To run more components, add their profiles to COMPOSE_PROFILES in .env'
-    Write-Host '  (ai-workspace, api-portal, api-control-plane, platform-api).'
+    Write-Host '  (ai-workspace, api-portal, platform-api).'
 } else {
     Write-Host '  No components are set for this pack yet - add a COMPOSE_PROFILES line to'
-    Write-Host '  .env (ai-workspace, api-portal, api-control-plane, platform-api) before starting.'
+    Write-Host '  .env (ai-workspace, api-portal, platform-api) before starting.'
 }
 Write-Host ''
