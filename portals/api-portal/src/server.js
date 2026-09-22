@@ -147,10 +147,13 @@ async function startServer() {
     await ensureSchema();
 
     // Seed before binding the listener, not from the 'listening' callback. This
-    // portal serves exactly one organization and cannot do anything without its row:
-    // every scoped lookup would 500 and both background workers scope their claim
-    // queries to it. Seeding here means a failure aborts startup (see the catch on
-    // the startServer() call below) rather than leaving a process that answers
+    // portal instance is configured with exactly one organization
+    // (organization.handle) and cannot do anything without its row: every scoped
+    // lookup would 500, and by default both background workers scope their claim
+    // queries to it too (see webhooks.delivery.dispatchAllOrganizations for the
+    // opt-in exception, when one instance serves multiple organizations sharing
+    // its database). Seeding here means a failure aborts startup (see the catch
+    // on the startServer() call below) rather than leaving a process that answers
     // /health 200 while being unable to serve a single page.
     //
     // Design mode renders from disk and never touches the organization tables (nor

@@ -257,6 +257,7 @@ function configurePassport(SERVER_ID) {
             if (options.fidp) params.fidp = options.fidp;
             if (options.username) params.username = options.username;
             if (options.org) params.org = options.org;
+            params.mode = 'org';
             return params;
         };
 

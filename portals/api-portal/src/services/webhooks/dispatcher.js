@@ -17,6 +17,7 @@
  */
 const { config } = require('../../config/configLoader');
 const eventDao = require('../../dao/eventDao');
+const orgDao = require('../../dao/organizationDao');
 const { matchSubscribers } = require('./subscriberRegistry');
 const { onPublished } = require('./eventPublisher');
 const db = require('../../db/driver');
@@ -33,44 +34,60 @@ let running = false;
 let intervalHandle = null;
 
 /**
- * Process one batch of this organization's PENDING (non-key) events: resolve
- * subscribers, create delivery rows, mark events as DISPATCHED.
+ * Process one batch of PENDING (non-key) events for each organization this
+ * dispatcher is responsible for: resolve subscribers, create delivery rows,
+ * mark events as DISPATCHED.
  *
- * Claims are scoped to the organization this instance serves — the events table is
- * shared with every other instance pointed at this database, and each one dispatches
- * only its own.
+ * Claims are scoped per organization — the events table is shared with every
+ * other instance pointed at this database, and by default each instance
+ * dispatches only its own (see the config comment below). Only with
+ * webhooks.delivery.dispatchAllOrganizations does a single instance claim
+ * every organization sharing this portal_id's database, for a deployment
+ * that runs one shared container for multiple tenant organizations instead
+ * of one container per organization.
  */
 async function runBatch() {
     const delivery = config.webhooks && config.webhooks.delivery;
     const batchSize = (delivery && delivery.batchSize) || 50;
-    const events = await eventDao.claimPending(batchSize, await orgContext.getOrgUuid());
-    if (events.length === 0) return;
+    const orgUuids = delivery && delivery.dispatchAllOrganizations
+        ? (await orgDao.list()).map((org) => org.uuid)
+        : [await orgContext.getOrgUuid()];
 
-    for (const event of events) {
+    for (const orgUuid of orgUuids) {
         try {
-            const subscribers = await matchSubscribers(event.org_uuid, event.type);
-            if (subscribers.length === 0) {
-                // No matching subscribers — mark as delivered immediately.
-                await db.execute(`UPDATE ${EVENTS_TABLE} SET status = ? WHERE uuid = ? AND portal_id = ?`,
-                    ['ALL_DELIVERED', event.uuid, orgContext.getPortalId()]);
-                continue;
+            const events = await eventDao.claimPending(batchSize, orgUuid);
+            for (const event of events) {
+                try {
+                    const subscribers = await matchSubscribers(event.org_uuid, event.type);
+                    if (subscribers.length === 0) {
+                        // No matching subscribers — mark as delivered immediately.
+                        await db.execute(`UPDATE ${EVENTS_TABLE} SET status = ? WHERE uuid = ? AND portal_id = ?`,
+                            ['ALL_DELIVERED', event.uuid, orgContext.getPortalId()]);
+                        continue;
+                    }
+                    await eventDao.createDeliveries(event.uuid, subscribers, null, null);
+                } catch (err) {
+                    logger.error('Failed to create deliveries for event', {
+                        eventId: event.uuid, error: err.message
+                    });
+                    try {
+                        await db.execute(`UPDATE ${EVENTS_TABLE} SET status = ? WHERE uuid = ? AND portal_id = ?`,
+                            ['PENDING', event.uuid, orgContext.getPortalId()]);
+                        logger.info('Restored event eligibility after delivery creation failure', {
+                            eventId: event.uuid
+                        });
+                    } catch (restoreErr) {
+                        logger.error('Failed to restore event eligibility', {
+                            eventId: event.uuid, error: restoreErr.message
+                        });
+                    }
+                }
             }
-            await eventDao.createDeliveries(event.uuid, subscribers, null, null);
         } catch (err) {
-            logger.error('Failed to create deliveries for event', {
-                eventId: event.uuid, error: err.message
-            });
-            try {
-                await db.execute(`UPDATE ${EVENTS_TABLE} SET status = ? WHERE uuid = ? AND portal_id = ?`,
-                    ['PENDING', event.uuid, orgContext.getPortalId()]);
-                logger.info('Restored event eligibility after delivery creation failure', {
-                    eventId: event.uuid
-                });
-            } catch (restoreErr) {
-                logger.error('Failed to restore event eligibility', {
-                    eventId: event.uuid, error: restoreErr.message
-                });
-            }
+            // Isolates one organization's claim failure from the others in the
+            // same tick — only relevant when dispatchAllOrganizations is looping
+            // more than one org uuid here.
+            logger.error('Failed to claim/process events for organization', { orgUuid, error: err.message });
         }
     }
 }

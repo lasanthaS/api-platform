@@ -114,12 +114,16 @@ async function createDeliveries(eventId, subscribers, perSubscriberEncrypted, tr
  * Claim a batch of this organization's PENDING events using SELECT FOR UPDATE SKIP
  * LOCKED. Returns events with their delivery rows.
  *
- * Scoped to `orgUuid` because the events table is shared: every portal instance
- * pointed at this database runs its own dispatcher, and an unscoped claim would let
- * one instance pick up another organization's events and dispatch them from its own
- * egress. The SKIP LOCKED claim keeps that from double-dispatching, so it wouldn't
- * look broken — it would just be the wrong instance doing the work, outside whatever
- * network policy that organization's deployment has.
+ * Scoped to `orgUuid` because the events table is shared: by default every portal
+ * instance pointed at this database runs its own dispatcher for its own
+ * organization, and an unscoped claim would let one instance pick up another
+ * organization's events and dispatch them from its own egress. The SKIP LOCKED
+ * claim keeps that from double-dispatching, so it wouldn't look broken — it would
+ * just be the wrong instance doing the work, outside whatever network policy that
+ * organization's deployment has. The caller may instead loop this across every
+ * organization sharing this database (webhooks.delivery.dispatchAllOrganizations,
+ * see dispatcher.js) when a single instance is deliberately serving all of them —
+ * this function's own per-call scoping is what keeps that safe either way.
  */
 async function claimPending(batchSize, orgUuid) {
     const isPostgres = db.getDialect() === 'postgres';
@@ -146,10 +150,13 @@ async function claimPending(batchSize, orgUuid) {
  * Claim a batch of this organization's PENDING delivery rows using SELECT FOR UPDATE
  * SKIP LOCKED.
  *
- * Scoped to `orgUuid` for the same reason as claimPending — and the stale-row
+ * Scoped to `orgUuid` for the same reason as claimPending (including the
+ * dispatchAllOrganizations exception documented there) — and the stale-row
  * recovery sweep below is scoped too: unscoped, every instance would keep resetting
  * every *other* instance's genuinely in-flight deliveries the moment they passed the
- * five-minute mark, turning slow deliveries into spurious failures.
+ * five-minute mark, turning slow deliveries into spurious failures. Looping this
+ * per organization (rather than dropping the predicate) keeps that sweep correctly
+ * scoped even when one instance is claiming for every organization.
  *
  * event_deliveries has no org_uuid of its own, so both statements reach the
  * organization through events. Postgres needs `FOR UPDATE OF d` here: with a join

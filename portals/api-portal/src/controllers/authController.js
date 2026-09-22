@@ -62,24 +62,25 @@ const login = async (req, res, next) => {
         const fidp = req.query.fidp;
         const fidpMap = config.auth.idp?.fidp || {};
         if (config.auth.mode === 'idp') {
-            const orgQuery = typeof req.query.org === 'string' ? req.query.org.trim() : '';
+            const resolvedOrgQuery = typeof req.query.org === 'string' ? req.query.org.trim() : '';
             if (fidp && fidpMap[fidp]) {
                 if (fidp === 'enterprise' && req.query.username) {
                     req.session.username = req.query.username;
-                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], username: req.query.username, ...(orgQuery && { org: orgQuery }) })(req, res, next);
+                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], username: req.query.username, ...(resolvedOrgQuery && { org: resolvedOrgQuery }) })(req, res, next);
                 } else {
-                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], ...(orgQuery && { org: orgQuery }) })(req, res, next);
+                    await passport.authenticate('oauth2', { fidp: fidpMap[fidp], ...(resolvedOrgQuery && { org: resolvedOrgQuery }) })(req, res, next);
                 }
             } else {
-                // No specific federated IDP requested — route through the IDP's own
-                // Organization SSO authenticator (ORGANIZATION_SSO_FIDP) rather than its
-                // default local login form, which has no way to scope itself to an
-                // organization's user store on its own. With no org known yet
-                // (orgQuery empty — the common case, a plain login click) the IDP prompts
-                // for one itself. With org known (orgQuery set — e.g. an onboarding/invite
-                // link built with ?org=<handle>) it skips that prompt entirely and goes
-                // straight to that organization's own login.
-                await passport.authenticate('oauth2', { fidp: constants.ORGANIZATION_SSO_FIDP, ...(orgQuery && { org: orgQuery }) })(req, res, next);
+                // No specific federated IDP requested. Deliberately NOT passing
+                // fidp: ORGANIZATION_SSO_FIDP here — the IDP's org-discovery prompt it
+                // triggers requires an "enhanced" organization authentication mode
+                // that may not be enabled on the configured IDP application, and fails
+                // outright (rather than prompting) when it isn't. Passing org alone
+                // (resolvedOrgQuery, when known) scopes the login to that
+                // organization's own user store without needing that prompt at all;
+                // with no org known either, this falls through to the IDP's plain
+                // login form.
+                await passport.authenticate('oauth2', { ...(resolvedOrgQuery && { org: resolvedOrgQuery }) })(req, res, next);
             }
         } else {
             // Local auth mode: show username/password form, themed with the active

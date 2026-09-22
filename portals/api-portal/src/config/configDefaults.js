@@ -332,6 +332,15 @@ const DEFAULTS = {
             pollIntervalMs: 2000,
             batchSize: 50,
             signatureToleranceSec: 300,
+            // When true, the dispatcher and delivery worker claim events/deliveries
+            // for every organization sharing this portal_id's database instead of
+            // only this instance's own configured organization — for a single
+            // container deployment serving multiple tenant orgs (see
+            // docs/administer/webhook-integration.md). Off by default: the
+            // intended deployment is one portal instance per organization, and an
+            // unscoped claim there would make one instance dispatch another
+            // organization's events over its own egress.
+            dispatchAllOrganizations: false,
         },
     },
     // Upload and archive-extraction limits.

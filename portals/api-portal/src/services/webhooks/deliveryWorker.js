@@ -22,6 +22,7 @@ const { config } = require('../../config/configLoader');
 const db = require('../../db/driver');
 const { parseJsonColumn } = require('../../db/rows');
 const eventDao = require('../../dao/eventDao');
+const orgDao = require('../../dao/organizationDao');
 const { getSubscriber } = require('./subscriberRegistry');
 const { sign } = require('./signer');
 const logger = require('../../config/logger');
@@ -115,10 +116,24 @@ async function post(delivery, event) {
 async function runBatch() {
     const delivery = config.webhooks && config.webhooks.delivery;
     const batchSize = (delivery && delivery.batchSize) || 50;
-    // Scoped to the organization this instance serves: the deliveries table is shared
-    // with every other instance on this database, and each one must only make the
-    // outbound calls for its own organization's subscribers.
-    const deliveries = await eventDao.claimDueDeliveries(batchSize, await orgContext.getOrgUuid());
+    // Scoped per organization: the deliveries table is shared with every other
+    // instance on this database, and by default each one must only make the
+    // outbound calls for its own organization's subscribers. Only with
+    // webhooks.delivery.dispatchAllOrganizations does this instance claim every
+    // organization sharing this portal_id's database (see dispatcher.js's
+    // runBatch() for the same config and the deployment it's for).
+    const orgUuids = delivery && delivery.dispatchAllOrganizations
+        ? (await orgDao.list()).map((org) => org.uuid)
+        : [await orgContext.getOrgUuid()];
+
+    const deliveries = [];
+    for (const orgUuid of orgUuids) {
+        try {
+            deliveries.push(...(await eventDao.claimDueDeliveries(batchSize, orgUuid)));
+        } catch (err) {
+            logger.error('Failed to claim deliveries for organization', { orgUuid, error: err.message });
+        }
+    }
     if (deliveries.length === 0) return;
 
     const eventIds = [...new Set(deliveries.map(d => d.event_uuid))];
