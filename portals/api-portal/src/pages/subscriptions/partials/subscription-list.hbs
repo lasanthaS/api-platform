@@ -9,7 +9,6 @@
         <tr>
           <th>API</th>
           <th>Version</th>
-          <th>Type</th>
           <th>Plan</th>
           <th>Status</th>
           <th style="text-align:right;">Actions</th>
@@ -26,9 +25,6 @@
             <a class="sub-api-link" href="{{../baseUrl}}/api/{{this.apiHandle}}">{{this.apiName}}</a>
           </td>
           <td>{{this.apiVersion}}</td>
-          <td>
-            <span class="sub-type-pill">Token-based</span>
-          </td>
           <td>{{this.planName}}</td>
           <td>
             <span class="sub-status-pill {{#if (eq this.status 'ACTIVE')}}sub-status-pill--active{{else}}sub-status-pill--inactive{{/if}}">

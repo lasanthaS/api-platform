@@ -41,7 +41,6 @@ const loadSubscriptions = async (req, res, next) => {
             const localSubs = await subDao.list(orgId, { createdBy });
             allSubscriptions = localSubs.map(sub => ({
                 id: sub.uuid,
-                type: 'TOKEN_BASED',
                 apiName: sub.api_metadata?.name || '',
                 apiVersion: sub.api_metadata?.version || '',
                 apiHandle: sub.api_metadata?.handle || '#',

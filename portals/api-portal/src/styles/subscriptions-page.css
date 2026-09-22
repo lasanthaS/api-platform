@@ -74,20 +74,6 @@
   color: var(--primary);
 }
 
-/* ── Type pill ────────────────────────────────────────────────── */
-.sub-type-pill {
-  display: inline-flex;
-  align-items: center;
-  background: var(--primary-surface);
-  color: var(--primary);
-  border-radius: 0.875rem;
-  padding: 0.3125rem 0.6875rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
-
 /* ── Token display ────────────────────────────────────────────── */
 .sub-token-wrap {
   display: flex;
