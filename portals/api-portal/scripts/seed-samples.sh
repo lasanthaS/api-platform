@@ -33,6 +33,19 @@
 # token instead (e.g. from an external IDP) and skips the Platform API login
 # entirely. API_PORTAL_URL / PLATFORM_API_URL override the default local URLs.
 #
+# SAMPLES_DIR overrides which directory's apis/ and mcps/ subfolders get
+# seeded — the default is auto-detected (see below); point it at a single
+# organization's own sample directory (resources/samples/<org>/) to deploy
+# only that org's bundle (see docs/administer/wso2-is-setup.md Section 5f for
+# a full per-tenant onboarding walkthrough that uses this).
+#
+# PLAN_OVERRIDE (optional), pipe-delimited plan handles, e.g. "Gold|Silver" —
+# when set, each sample's subscriptionPlans: block is rewritten to exactly
+# this list before upload, regardless of what the sample's own api.yaml
+# declares. Used when onboarding a tenant (wso2-is-setup.md Section 5f) so a
+# seeded catalog only ever advertises plans that actually exist in the target
+# organization.
+#
 # Safe to re-run: entries that already exist (matched by name + version) are
 # skipped, not duplicated.
 
@@ -53,9 +66,12 @@ else
     exit 1
 fi
 
-# The distribution zip ships samples under resources/samples/; the source
-# repo keeps them at samples/ (see Makefile's dist target for the copy).
-if [ -d "$ROOT_DIR/resources/samples" ]; then
+# SAMPLES_DIR, if the caller supplied one, is used as-is. Otherwise: the
+# distribution zip ships samples under resources/samples/; the source repo
+# keeps them at samples/ (see Makefile's dist target for the copy).
+if [ -n "${SAMPLES_DIR:-}" ]; then
+    [ -d "$SAMPLES_DIR" ] || { echo "[seed-samples] ERROR: SAMPLES_DIR does not exist: $SAMPLES_DIR" >&2; exit 1; }
+elif [ -d "$ROOT_DIR/resources/samples" ]; then
     SAMPLES_DIR="$ROOT_DIR/resources/samples"
 elif [ -d "$ROOT_DIR/samples" ]; then
     SAMPLES_DIR="$ROOT_DIR/samples"
@@ -88,8 +104,8 @@ command -v jq   >/dev/null 2>&1 || fail "jq is required but not found on PATH."
 command -v zip  >/dev/null 2>&1 || fail "zip is required but not found on PATH."
 
 # ACCESS_TOKEN lets a caller supply an already-issued bearer token (e.g. one
-# obtained from an external IDP, as onboard-tenant.sh does) instead of logging in
-# to Platform API here — the only auth backend this script otherwise knows about.
+# obtained from an external IDP) instead of logging in to Platform API here —
+# the only auth backend this script otherwise knows about.
 if [ -n "${ACCESS_TOKEN:-}" ]; then
     log "Using supplied ACCESS_TOKEN — skipping Platform API login."
     TOKEN="$ACCESS_TOKEN"
@@ -122,25 +138,27 @@ SECONDS=0
 API_CREATED=0; API_SKIPPED=0; API_FAILED=0
 MCP_CREATED=0; MCP_SKIPPED=0; MCP_FAILED=0
 
-# Uploads sample_dir/docs/ as the content ZIP for an already-created API/MCP server.
-# Result is left in DOCS_RESULT (a ready-to-print fragment) and DOCS_FAILED (0/1)
-# rather than printed directly, so seed_entry can fold the fragment into that
-# sample's single summary line and tally the outcome into the right counter.
+# Uploads sample_dir/api-portal/docs/ as the content ZIP for an already-created
+# API/MCP server. Result is left in DOCS_RESULT (a ready-to-print fragment) and
+# DOCS_FAILED (0/1) rather than printed directly, so seed_entry can fold the
+# fragment into that sample's single summary line and tally the outcome into
+# the right counter.
 seed_docs() {
     local sample_dir="$1" resource_path="$2"
     DOCS_RESULT=""
     DOCS_FAILED=0
-    [ -d "$sample_dir/docs" ] || return 0
+    [ -d "$sample_dir/api-portal/docs" ] || return 0
 
     local tmp_zip
     tmp_zip="$(mktemp /tmp/api-portal-docs-XXXXXX)"
     rm -f "$tmp_zip"
     tmp_zip="${tmp_zip}.zip"
-    # Wrapped in a top-level folder (named after the sample) rather than zipping
+    # Wrapped in a top-level folder (any name — here, "api-portal", since
+    # that's the directory docs/ actually lives under) rather than zipping
     # docs/ bare at the root — the server unwraps a single top-level directory
     # entry looking for web/ or docs/ inside it; zipping docs/ alone as that one
     # entry gets unwrapped too, so it then looks for (and fails to find) docs/docs.
-    (cd "$sample_dir/.." && zip -qr "$tmp_zip" "$(basename "$sample_dir")/docs/")
+    (cd "$sample_dir" && zip -qr "$tmp_zip" "api-portal/docs/")
 
     local http_code
     http_code=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
@@ -179,27 +197,57 @@ bump_counter() {
     fi
 }
 
-# Creates one API or MCP server entry from a sample directory (api.yaml + optional
-# definition.* + optional docs/), via the given collection endpoint. Prints exactly
-# one summary line per sample and tallies the outcome into the *_CREATED/SKIPPED/
-# FAILED counters (bucketed by $endpoint) for the closing summary.
+# Creates one API or MCP server entry from a sample directory's api-portal/
+# subfolder (api-portal/api.yaml + optional definition.* + optional docs/), via
+# the given collection endpoint. A sample directory can hold other consumers'
+# content alongside it (e.g. gateway config, mock services) — only api-portal/
+# is ever read here. Prints exactly one summary line per sample and tallies
+# the outcome into the *_CREATED/SKIPPED/FAILED counters (bucketed by
+# $endpoint) for the closing summary.
 seed_entry() {
     local sample_dir="$1" endpoint="$2"
     local name; name="$(basename "$sample_dir")"
-    local api_yaml="$sample_dir/api.yaml"
+    local api_portal_dir="$sample_dir/api-portal"
+    local api_yaml="$api_portal_dir/api.yaml"
 
     if [ ! -f "$api_yaml" ]; then
-        printf "  ${C_YELLOW}%s${C_RESET} %-28s ${C_DIM}(no api.yaml, skipped)${C_RESET}\n" "$SYM_SKIP" "$name"
+        printf "  ${C_YELLOW}%s${C_RESET} %-28s ${C_DIM}(no api-portal/api.yaml, skipped)${C_RESET}\n" "$SYM_SKIP" "$name"
         bump_counter "$endpoint" SKIPPED
         return
     fi
 
     local definition
-    definition=$(compgen -G "$sample_dir/definition.*" 2>/dev/null | head -1 || true)
+    definition=$(compgen -G "$api_portal_dir/definition.*" 2>/dev/null | head -1 || true)
 
+    # PLAN_OVERRIDE (see the header comment) replaces the sample's own
+    # subscriptionPlans: block with exactly the org's plan set, so a seeded
+    # catalog never advertises a plan that doesn't exist in the target
+    # organization. Every sample writes this as a multi-line block
+    # (subscriptionPlans:\n    - Plan), confirmed in every sample checked —
+    # a targeted awk substitution is reliable; no YAML parser needed.
+    local tmp_yaml=""
+    if [ -n "${PLAN_OVERRIDE:-}" ]; then
+        tmp_yaml="/tmp/seed-samples-metadata-$$-$name.yaml"
+        awk -v flat="$PLAN_OVERRIDE" '
+            /^  subscriptionPlans:$/ {
+                print
+                n = split(flat, arr, "|")
+                for (i = 1; i <= n; i++) print "    - " arr[i]
+                in_block = 1
+                next
+            }
+            in_block && /^    - / { next }
+            { in_block = 0; print }
+        ' "$api_yaml" > "$tmp_yaml"
+        api_yaml="$tmp_yaml"
+    fi
+
+    # filename=api.yaml overrides what curl would otherwise send (the tmp
+    # file's own basename, when PLAN_OVERRIDE is set) — the server validates
+    # the uploaded metadata part's filename against an allow-list.
     local curl_args=(-sk -X POST "$API_PORTAL_URL$API_PORTAL_API_BASE/$endpoint" \
         -H "$AUTH_HEADER" \
-        -F "metadata=@$api_yaml;type=application/yaml")
+        -F "metadata=@$api_yaml;filename=api.yaml;type=application/yaml")
     if [ -n "$definition" ]; then
         curl_args+=(-F "definition=@$definition;type=application/octet-stream")
     fi
@@ -208,6 +256,7 @@ seed_entry() {
     response=$(curl "${curl_args[@]}" -w "\n%{http_code}")
     http_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | sed '$d')
+    [ -n "$tmp_yaml" ] && rm -f "$tmp_yaml"
 
     if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
         id=$(echo "$body" | jq -r '.id // empty')

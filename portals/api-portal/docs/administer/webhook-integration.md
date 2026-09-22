@@ -599,6 +599,22 @@ If no secret is configured for the subscriber, sensitive fields are omitted from
 
 Each delivery is attempted exactly once. If your subscriber endpoint is unavailable or returns a non-2xx response, the delivery is marked `FAILED` immediately — there is no retry or dead-letter queue. Make sure your endpoint is reliable and fast (see `timeoutMs`), since a missed event is not redelivered automatically.
 
+## Multi-organization deployments
+
+The webhook dispatcher and delivery worker are each a single background poll loop per running portal instance, and by default both only claim events/deliveries for **this instance's own configured organization** (`[api_portal.organization] handle`). This is deliberate: the assumed deployment is one portal instance per organization, all pointed at the same shared database, so each instance's dispatcher only ever reaches out over its own organization's network — never another organization's, on its behalf.
+
+If you instead run a **single shared portal instance serving multiple organizations** — e.g. one container onboarding several tenant orgs (see [WSO2 Identity Server Setup](wso2-is-setup.md)), all through the same running process — that default silently means only one org's webhook subscribers ever fire: every other organization's events sit `PENDING` forever, with no error logged. Set:
+
+```toml
+[api_portal.webhooks.delivery]
+dispatch_all_organizations = true
+```
+
+to make both loops claim events for every organization sharing this instance's database instead of just the one it's pinned to. Two things to know before enabling it:
+
+- **Only turn this on for a genuinely single-shared-instance deployment.** If you ever run more than one portal instance against the same database with this flag on, every instance will attempt every organization's deliveries — defeating the per-organization network isolation the default scoping exists for.
+- **`batchSize` becomes a per-organization, per-poll-tick budget**, not a global one — total work per tick now scales with how many organizations exist in the database. Tune `pollIntervalMs`/`batchSize` accordingly if you have many organizations.
+
 ## Monitoring Event Deliveries
 
 > **Authentication:** The examples below use a `$TOKEN` variable. Obtain a Bearer token first via your configured OIDC provider, or via local auth if enabled.
